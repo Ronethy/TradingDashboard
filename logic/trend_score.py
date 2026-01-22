@@ -1,32 +1,22 @@
-def calculate_trend_score(s):
+from logic.indicators import ema, rsi
+
+def calculate_trend_score(df):
+    if len(df) < 50:
+        return 0
+
+    df["ema20"] = ema(df["close"], 20)
+    df["ema50"] = ema(df["close"], 50)
+    df["rsi"] = rsi(df["close"])
+
     score = 0
 
-    # EMA Struktur
-    if s.ema9 > s.ema20 > s.ema50:
+    if df["ema20"].iloc[-1] > df["ema50"].iloc[-1]:
+        score += 40
+
+    if df["close"].iloc[-1] > df["ema20"].iloc[-1]:
         score += 30
-    elif s.ema9 > s.ema20:
-        score += 15
 
-    # RSI
-    if 50 <= s.rsi <= 65:
-        score += 20
-    elif 45 <= s.rsi < 50 or 65 < s.rsi <= 70:
-        score += 10
+    if 50 < df["rsi"].iloc[-1] < 70:
+        score += 30
 
-    # Volumen
-    if s.volume_ratio > 1.5:
-        score += 20
-    elif s.volume_ratio > 1.1:
-        score += 10
-
-    # ATR
-    if s.atr / s.price > 0.015:
-        score += 15
-
-    # Marktphase
-    if s.market_state == "OPEN":
-        score += 15
-    elif s.market_state == "PRE":
-        score += 8
-
-    return min(score, 100)
+    return score
