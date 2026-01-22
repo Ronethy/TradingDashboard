@@ -1,4 +1,13 @@
+from dataclasses import dataclass
+
+@dataclass
 class MarketSnapshot:
-    def __init__(self, price, volume):
-        self.price = price
-        self.volume = volume
+    symbol: str
+    price: float
+    rsi: float
+    ema9: float
+    ema20: float
+    ema50: float
+    atr: float
+    volume_ratio: float
+    market_state: str
