@@ -10,4 +10,4 @@ class MarketSnapshot:
     ema50: float
     atr: float
     volume_ratio: float
-    market_state: str  # PRE / OPEN / CLOSED
+    market_state: str
