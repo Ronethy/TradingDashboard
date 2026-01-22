@@ -1,27 +1,19 @@
-from logic.decision_base import score_to_ampel
-
-def decide_swing(snapshot):
+def decide_swing(snapshot: MarketSnapshot) -> tuple[str, list[str]]:
     reasons = []
-    score = 0
 
-    # Gatekeeper
-    if snapshot.ema20 <= snapshot.ema50:
-        return "🔴 Rot – Kein Trade", ["Kein stabiler Aufwärtstrend"]
+    if snapshot.rsi > 80:
+        reasons.append("RSI stark überkauft – Pullback möglich")
+        return "🟡 Vorsicht / warten", reasons
 
-    if not (40 <= snapshot.rsi <= 65):
-        return "🔴 Rot – Kein Trade", ["RSI außerhalb gesunder Zone"]
+    if snapshot.rsi < 30:
+        reasons.append("RSI stark überverkauft – potenzieller Einstieg")
+        return "🟢 Swing Long möglich", reasons
 
-    # Scoring
-    score += 30
-    reasons.append("Trendstruktur intakt")
+    if snapshot.ema20 > snapshot.ema50 and snapshot.price > snapshot.ema20:
+        reasons.append("Preis über EMA20 + EMA20 > EMA50")
+        if snapshot.volume_ratio > 1.5:
+            reasons.append("Starkes Volumen")
+        return "🟢 Swing Long", reasons
 
-    if snapshot.volume_ratio > 1.2:
-        score += 15
-        reasons.append("Volumen bestätigt Bewegung")
-
-    if snapshot.atr > 0:
-        score += 10
-        reasons.append("Ausreichende Volatilität")
-
-    ampel = score_to_ampel(score, green=65, yellow=50)
-    return ampel, reasons
+    reasons.append("Kein klarer Swing-Setup erkennbar")
+    return "🟡 Neutral / abwarten", reasons
