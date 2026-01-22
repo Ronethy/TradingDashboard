@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import pytz
 from datetime import datetime, timedelta
 
@@ -18,29 +16,30 @@ from logic.trade_plan import generate_trade_plan
 from logic.decision_daytrade import decide_daytrade
 from logic.decision_swing import decide_swing
 from logic.premarket_scanner import scan_early_movers
+from logic.decision_base import score_to_ampel
 
-st.set_page_config(page_title="Momentum Trading Dashboard", layout="wide")
+st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
-# ── Alpaca Client ───────────────────────────────────────────
 client = StockHistoricalDataClient(
     st.secrets["ALPACA_API_KEY"],
     st.secrets["ALPACA_SECRET_KEY"]
 )
 
-# ── Session State ───────────────────────────────────────────
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 
-# ── Marktstatus ─────────────────────────────────────────────
 ny_tz = pytz.timezone("America/New_York")
 now_ny = datetime.now(ny_tz)
 market_state = "PRE" if now_ny.hour < 9 else "OPEN" if now_ny.hour < 16 else "CLOSED"
 
-st.title("📊 Smart Momentum Trading Dashboard")
-st.write(f"**NYSE-Zeit:** {now_ny.strftime('%Y-%m-%d %H:%M')} | **Status:** {market_state}")
+st.title("Smart Momentum Trading Dashboard")
+st.caption(f"NYSE-Zeit: {now_ny.strftime('%Y-%m-%d %H:%M')} | {market_state}")
 
-# ── Daten-Caching ───────────────────────────────────────────
-@st.cache_data(ttl=600)
+if st.button("Daten aktualisieren (Cache leeren)"):
+    st.cache_data.clear()
+    st.rerun()
+
+@st.cache_data(ttl=60)
 def load_daily_data(symbols):
     data = {}
     batch_size = 80
@@ -50,13 +49,14 @@ def load_daily_data(symbols):
             req = StockBarsRequest(
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
-                start=now_ny - timedelta(days=120),
-                limit=120
+                start=now_ny - timedelta(days=150),
+                end=now_ny + timedelta(hours=6),          # aktuelle Kerze holen
+                adjustment="all"
             )
             bars = client.get_stock_bars(req).df
             for sym in batch:
                 try:
-                    df_sym = bars.xs(sym, level="symbol").copy()
+                    df_sym = bars[bars.index.get_level_values('symbol') == sym].copy()
                     if not df_sym.empty:
                         data[sym] = df_sym
                 except:
@@ -67,130 +67,107 @@ def load_daily_data(symbols):
 
 daily_data = load_daily_data(SP500_SYMBOLS)
 
-# ── Tabs ────────────────────────────────────────────────────
-tab_early, tab_scanner, tab_day, tab_swing = st.tabs([
-    "🔥 Early Movers",
-    "🧠 S&P 500 Scanner",
-    "⚡ Daytrade",
-    "🧭 Swing"
-])
+st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
 
-# ── Early Movers ────────────────────────────────────────────
-with tab_early:
+tabs = st.tabs(["Early Movers", "S&P Scanner", "Detail & Entscheidung"])
+
+with tabs[0]:
     st.subheader("Early Movers – Gap ≥ 0.8%")
     movers = scan_early_movers(SP500_SYMBOLS, client)
     if movers.empty:
-        st.info("Keine signifikanten Gaps gefunden")
+        st.info("Keine signifikanten Gaps")
     else:
-        st.dataframe(movers, use_container_width=True, hide_index=True)
-
-        jump = st.selectbox("Zu Detail springen:", ["—"] + movers["Symbol"].tolist())
+        st.dataframe(movers, width='stretch', hide_index=True)
+        jump = st.selectbox("Zu Detail:", ["—"] + movers["Symbol"].tolist())
         if jump != "—":
             st.session_state.selected_ticker = jump
             st.rerun()
 
-# ── S&P 500 Scanner ─────────────────────────────────────────
-with tab_scanner:
-    st.subheader("S&P 500 – Top Trend-Score")
-
+with tabs[1]:
+    st.subheader("S&P 500 – Top Trend-Scores")
     results = []
-    for sym, df in daily_data.items():
-        if len(df) < 40:
-            continue
-        df_ind = df.copy()
-        df_ind["ema9"] = ema(df_ind["close"], 9)
-        df_ind["ema20"] = ema(df_ind["close"], 20)
-        df_ind["ema50"] = ema(df_ind["close"], 50)
-        df_ind["rsi"] = rsi(df_ind["close"])
-        df_ind["atr"] = atr(df_ind)
-        df_ind.dropna(inplace=True)
-
-        if df_ind.empty:
-            continue
-
-        latest = df_ind.iloc[-1]
-        vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
-
-        snap = MarketSnapshot(
-            symbol=sym,
-            price=float(latest["close"]),
-            rsi=float(latest["rsi"]),
-            ema9=float(latest["ema9"]),
-            ema20=float(latest["ema20"]),
-            ema50=float(latest["ema50"]),
-            atr=float(latest["atr"]),
-            volume_ratio=vol_ratio,
-            market_state=market_state
-        )
-
-        score = calculate_trend_score(snap)
-        bias = get_option_bias(snap, score)
-        plan = generate_trade_plan(snap, score)
-
-        row = {"Symbol": sym, "Score": score, "Bias": bias}
-        if plan:
-            row.update(plan)
-        results.append(row)
+    for sym, df_raw in daily_data.items():
+        try:
+            if len(df_raw) < 30:
+                continue
+            df = df_raw.copy()
+            df["ema9"] = ema(df["close"], 9)
+            df["ema20"] = ema(df["close"], 20)
+            df["ema50"] = ema(df["close"], 50)
+            df["rsi"] = rsi(df["close"])
+            df["atr"] = atr(df)
+            df.dropna(inplace=True)
+            if df.empty:
+                continue
+            latest = df.iloc[-1]
+            vol_ratio = latest["volume"] / df["volume"].mean() if df["volume"].mean() > 0 else 1.0
+            snap = MarketSnapshot(
+                sym, float(latest["close"]), float(latest["rsi"]),
+                float(latest["ema9"]), float(latest["ema20"]), float(latest["ema50"]),
+                float(latest["atr"]), vol_ratio, market_state
+            )
+            score = calculate_trend_score(snap)
+            bias = get_option_bias(snap, score)
+            plan = generate_trade_plan(snap, score)
+            row = {"Symbol": sym, "Score": score, "Ampel": score_to_ampel(score), "Bias": bias}
+            if plan:
+                row.update(plan)
+            results.append(row)
+        except:
+            pass
 
     if results:
         df_res = pd.DataFrame(results).sort_values("Score", ascending=False).head(30).reset_index(drop=True)
-        st.dataframe(df_res, use_container_width=True)
+        st.dataframe(df_res, width='stretch')
     else:
         st.warning("Keine auswertbaren Daten")
 
-# ── Daytrade & Swing ────────────────────────────────────────
-selected = st.session_state.selected_ticker
-st.subheader(f"Detailansicht: {selected}")
+with tabs[2]:
+    ticker = st.selectbox("Ticker", options=list(daily_data.keys()) or ["AAPL"], index=0)
+    st.session_state.selected_ticker = ticker
 
-if selected in daily_data and len(daily_data[selected]) >= 30:
-    df = daily_data[selected].copy()
-    df["ema9"] = ema(df["close"], 9)
-    df["ema20"] = ema(df["close"], 20)
-    df["ema50"] = ema(df["close"], 50)
-    df["rsi"] = rsi(df["close"])
-    df["atr"] = atr(df)
-    df.dropna(inplace=True)
+    if ticker in daily_data and len(daily_data[ticker]) >= 30:
+        df = daily_data[ticker].copy()
+        df["ema9"] = ema(df["close"], 9)
+        df["ema20"] = ema(df["close"], 20)
+        df["ema50"] = ema(df["close"], 50)
+        df["rsi"] = rsi(df["close"])
+        df["atr"] = atr(df)
+        df.dropna(inplace=True)
 
-    if not df.empty:
-        latest = df.iloc[-1]
-        vol_ratio = latest["volume"] / df["volume"].mean()
+        if not df.empty:
+            latest = df.iloc[-1]
+            vol_ratio = latest["volume"] / df["volume"].mean() if df["volume"].mean() > 0 else 1.0
+            snap = MarketSnapshot(
+                ticker, float(latest["close"]), float(latest["rsi"]),
+                float(latest["ema9"]), float(latest["ema20"]), float(latest["ema50"]),
+                float(latest["atr"]), vol_ratio, market_state
+            )
 
-        snap = MarketSnapshot(
-            symbol=selected,
-            price=float(latest["close"]),
-            rsi=float(latest["rsi"]),
-            ema9=float(latest["ema9"]),
-            ema20=float(latest["ema20"]),
-            ema50=float(latest["ema50"]),
-            atr=float(latest["atr"]),
-            volume_ratio=vol_ratio,
-            market_state=market_state
-        )
+            score = calculate_trend_score(snap)
+            st.markdown(f"**Trend-Score:** {score} → {score_to_ampel(score)}")
 
-        col1, col2 = st.columns(2)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Daytrade")
+                ampel_d, reasons_d = decide_daytrade(snap)
+                st.markdown(f"### {ampel_d}")
+                for r in reasons_d: st.write("• " + r)
 
-        with col1:
-            st.subheader("⚡ Daytrade")
-            ampel_day, reasons_day = decide_daytrade(snap)
-            st.markdown(f"### {ampel_day}")
-            for r in reasons_day:
-                st.write(f"• {r}")
+            with col2:
+                st.subheader("Swing")
+                ampel_s, reasons_s = decide_swing(snap)
+                st.markdown(f"### {ampel_s}")
+                for r in reasons_s: st.write("• " + r)
 
-        with col2:
-            st.subheader("🧭 Swing")
-            ampel_swing, reasons_swing = decide_swing(snap)
-            st.markdown(f"### {ampel_swing}")
-            for r in reasons_swing:
-                st.write(f"• {r}")
+            st.markdown(f"**Bias:** {get_option_bias(snap, score)}")
 
-        score = calculate_trend_score(snap)
-        bias = get_option_bias(snap, score)
-        plan = generate_trade_plan(snap, score)
-
-        st.markdown(f"**Trend-Score:** {score}/100 | **Bias:** {bias}")
-
-        if plan:
-            st.markdown("**Trade-Plan (1:2 RR)**")
-            st.json(plan)
+            plan = generate_trade_plan(snap, score)
+            if plan:
+                st.json(plan)
+            else:
+                st.info("Kein valider Trade-Plan")
         else:
-            st.info("Kein valider Trade-Plan (Score zu niedrig oder RR < 1.8)")
+            st.warning("Nach Berechnung keine Daten mehr übrig")
+    else:
+        st.info("Nicht genug Daten für diesen Ticker")
