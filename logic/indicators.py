@@ -1,16 +1,14 @@
 import pandas as pd
 import numpy as np
 
-def ema(series, length):
-    return series.ewm(span=length, adjust=False).mean()
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
 def rsi(series, period=14):
     delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+    rs = gain / loss
     return 100 - (100 / (1 + rs))
 
 def atr(df, period=14):
