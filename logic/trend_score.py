@@ -1,3 +1,5 @@
+from logic.snapshot import MarketSnapshot
+
 def calculate_trend_score(s: MarketSnapshot) -> int:
     score = 0
 
@@ -19,11 +21,11 @@ def calculate_trend_score(s: MarketSnapshot) -> int:
     elif s.volume_ratio > 1.1:
         score += 10
 
-    # ATR (max 15)
+    # ATR (Bewegungspotenzial, max 15)
     if s.atr / s.price > 0.015:
         score += 15
 
-    # Marktphase (max 15)
+    # Marktphase-Bonus (max 15)
     if s.market_state == "OPEN":
         score += 15
     elif s.market_state == "PRE":
