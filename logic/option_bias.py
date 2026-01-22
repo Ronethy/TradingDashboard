@@ -1,6 +1,11 @@
-def option_bias(trend_score):
-    if trend_score >= 70:
-        return "Bullish Calls"
-    if trend_score >= 40:
-        return "Neutral / Spreads"
-    return "Bearish / Puts"
+def get_option_bias(snapshot: MarketSnapshot, score: int) -> str:
+    if score < 60:
+        return "NEUTRAL / kein Options-Trade"
+
+    if snapshot.ema9 > snapshot.ema20 > snapshot.ema50:
+        return "BULLISH → CALLs / Long-Bias"
+
+    if snapshot.ema9 < snapshot.ema20 < snapshot.ema50:
+        return "BEARISH → PUTs / Short-Bias"
+
+    return "NEUTRAL / Spreads oder warten"
