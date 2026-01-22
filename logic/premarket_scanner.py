@@ -1,34 +1,27 @@
 import pandas as pd
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from logic.trend_score import calculate_trend_score
 
-def scan_early_movers(symbols, client, max_results=20):
-    rows = []
+def scan_early_movers(data_dict):
+    results = []
 
-    for s in symbols:
-        try:
-            req = StockBarsRequest(
-                symbol_or_symbols=s,
-                timeframe=TimeFrame.Day,
-                limit=2
-            )
-            df = client.get_stock_bars(req).df
-            if len(df) < 2:
-                continue
+    for symbol, df in data_dict.items():
+        if len(df) < 2:
+            continue
 
-            prev, curr = df.iloc[-2], df.iloc[-1]
-            gap = (curr["open"] - prev["close"]) / prev["close"] * 100
+        prev_close = df["close"].iloc[-2]
+        open_price = df["open"].iloc[-1]
 
-            rows.append({
-                "Symbol": s,
+        gap = (open_price - prev_close) / prev_close * 100
+
+        if abs(gap) >= 1:
+            score = calculate_trend_score(df)
+            results.append({
+                "Symbol": symbol,
                 "Gap %": round(gap, 2),
-                "Abs Gap": abs(gap)
+                "Trend-Score": score
             })
-        except Exception:
-            pass
 
-    df = pd.DataFrame(rows)
-    if df.empty:
-        return df
+    if not results:
+        return pd.DataFrame()
 
-    return df.sort_values("Abs Gap", ascending=False).head(max_results)
+    return pd.DataFrame(results).sort_values("Gap %", ascending=False).head(20)
