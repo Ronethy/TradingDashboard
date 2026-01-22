@@ -1,35 +1,24 @@
-from logic.decision_base import score_to_ampel
-
-def decide_daytrade(snapshot):
+def decide_daytrade(snapshot: MarketSnapshot) -> tuple[str, list[str]]:
     reasons = []
-    score = 0
 
-    # Gatekeeper
-    if snapshot.market_state not in ["PRE", "OPEN"]:
-        return "🔴 Rot – Kein Trade", ["Markt geschlossen"]
+    if snapshot.market_state == "PRE":
+        return "⚪ Pre-Market – warte auf Open", reasons
 
-    if snapshot.volume_ratio < 1.5:
-        return "🔴 Rot – Kein Trade", ["Zu wenig Volumen"]
+    if snapshot.rsi > 75:
+        reasons.append("RSI überkauft (>75)")
+        return "🔴 Vermeiden", reasons
 
-    if snapshot.rsi > 80:
-        return "🔴 Rot – Kein Trade", ["RSI überhitzt"]
+    if snapshot.rsi < 25:
+        reasons.append("RSI stark überverkauft")
+        return "🟡 Abwarten / Long nur mit Bestätigung", reasons
 
-    # Scoring
-    if snapshot.ema9 > snapshot.ema20:
-        score += 25
-        reasons.append("Kurzfristiger Aufwärtstrend")
+    if snapshot.ema9 > snapshot.ema20 > snapshot.ema50:
+        reasons.append("Bullisches EMA-Stacking")
+        return "🟢 Long Daytrade möglich", reasons
 
-    if snapshot.volume_ratio > 2:
-        score += 20
-        reasons.append("Starker Volumen-Impuls")
+    if snapshot.ema9 < snapshot.ema20:
+        reasons.append("Kurzfristiger Abwärtstrend")
+        return "🔴 Short oder meiden", reasons
 
-    if snapshot.atr > 0:
-        score += 15
-        reasons.append("Bewegung vorhanden (ATR)")
-
-    if snapshot.market_state == "OPEN":
-        score += 10
-        reasons.append("Regulärer Handel")
-
-    ampel = score_to_ampel(score, green=70, yellow=50)
-    return ampel, reasons
+    reasons.append("Kein klares Intraday-Setup")
+    return "🟡 Neutral", reasons
