@@ -20,6 +20,7 @@ from logic.decision_daytrade import decide_daytrade
 from logic.decision_swing import decide_swing
 from logic.premarket_scanner import scan_early_movers
 from logic.decision_base import score_to_ampel
+from logic.additional_indicators import rsi_divergence, macd_info   # ← neu hinzugefügt
 
 st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
@@ -384,6 +385,7 @@ with tabs[3]:
             bias = get_option_bias(snap, score)
             plan = generate_trade_plan(snap, score)
 
+            # Ampel-Logik visuell
             if score >= 70:
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
@@ -399,18 +401,34 @@ with tabs[3]:
             else:
                 st.info("Kein valider Trade-Plan")
 
-            # News für ausgewähltes Symbol laden
-            st.subheader("News zu dieser Aktie")
-            news = get_stock_news(ticker, alpha_vantage_key, limit=3)
-            if news:
-                for item in news:
-                    title = item.get("title", "No title")
-                    url = item.get("url", "#")
-                    sentiment = item.get("overall_sentiment_label", "Neutral")
-                    st.markdown(f"- [{title}]({url}) – Sentiment: **{sentiment}**")
-                st.markdown("---")
-            else:
-                st.info("Keine News verfügbar")
+            # Zusatz-Indikatoren (neu)
+            st.subheader("Zusatz-Indikatoren")
+            col_div, col_macd = st.columns(2)
+
+            with col_div:
+                div = rsi_divergence(df_ind)
+                st.markdown("**RSI-Divergenz** (letzte 30 Bars)")
+                if "Bullish" in div:
+                    st.success(div)
+                elif "Bearish" in div:
+                    st.error(div)
+                else:
+                    st.info(div)
+
+            with col_macd:
+                macd = macd_info(df_ind)
+                st.markdown("**MACD (12,26,9)**")
+                if macd["MACD"] is not None:
+                    st.write(f"MACD: {macd['MACD']} | Signal: {macd['Signal']}")
+                    st.write(f"Histogramm: {macd['Histogramm']}")
+                    if "Bullish" in macd["Interpretation"]:
+                        st.success(macd["Interpretation"])
+                    elif "Bearish" in macd["Interpretation"]:
+                        st.error(macd["Interpretation"])
+                    else:
+                        st.info(macd["Interpretation"])
+                else:
+                    st.info(macd["text"])
 
             col1, col2 = st.columns(2)
             with col1:
@@ -424,6 +442,19 @@ with tabs[3]:
                 st.markdown(f"**Swing:** {ampel_s}")
                 for r in reasons_s:
                     st.write("• " + r)
+
+            # News für ausgewähltes Symbol laden
+            st.subheader("News zu dieser Aktie")
+            news = get_stock_news(ticker, alpha_vantage_key, limit=3)
+            if news:
+                for item in news:
+                    title = item.get("title", "No title")
+                    url = item.get("url", "#")
+                    sentiment = item.get("overall_sentiment_label", "Neutral")
+                    st.markdown(f"- [{title}]({url}) – Sentiment: **{sentiment}**")
+                st.markdown("---")
+            else:
+                st.info("Keine News verfügbar")
 
         else:
             st.warning("Keine Daten nach Berechnung")
