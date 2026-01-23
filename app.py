@@ -37,7 +37,10 @@ market_state = "PRE" if now_ny.hour < 9 else "OPEN" if now_ny.hour < 16 else "CL
 st.title("📊 Smart Momentum Trading Dashboard")
 st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M')}")
 
-if st.button("Daten neu laden (Cache leeren)"):
+if market_state == "PRE":
+    st.warning("Pre-Market: Viele Scores & Ampele sind eingeschränkt – warte auf Open (9:30 ET)")
+
+if st.button("Daten aktualisieren (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
 
@@ -53,7 +56,7 @@ def load_daily_data(symbols):
                 timeframe=TimeFrame.Day,
                 start=now_ny - timedelta(days=150),
                 end=now_ny + timedelta(days=1),
-                feed="iex"  # Free-Tier-kompatibel
+                feed="iex"
             )
             bars = client.get_stock_bars(req).df
             for sym in batch:
@@ -66,6 +69,26 @@ def load_daily_data(symbols):
         except Exception as e:
             st.caption(f"Batch-Fehler: {str(e)}")
     return data
+
+@st.cache_data(ttl=60)
+def load_intraday(ticker):
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Minute,
+            start=now_ny - timedelta(days=2),
+            end=now_ny + timedelta(minutes=30),
+            feed="iex",
+            limit=10000
+        )
+        bars = client.get_stock_bars(req).df
+        if not bars.empty:
+            bars.index = bars.index.tz_convert(ny_tz)
+            return bars
+        return pd.DataFrame()
+    except Exception as e:
+        st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
+        return pd.DataFrame()
 
 daily_data = load_daily_data(SP500_SYMBOLS)
 
@@ -118,22 +141,33 @@ with tabs[1]:
         df_res = pd.DataFrame(results).sort_values("Score", ascending=False).head(30)
         st.dataframe(df_res, width='stretch')
     else:
-        st.warning("Keine Daten geladen – prüfe API-Keys oder Symbol-Liste")
+        st.warning("Keine Daten geladen")
 
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
-    ticker = st.session_state.selected_ticker
-    if ticker in daily_data and not daily_data[ticker].empty:
-        df = daily_data[ticker]
+    available = list(daily_data.keys()) if daily_data else ["AAPL"]
+    ticker = st.selectbox("Ticker", available, index=available.index(st.session_state.selected_ticker) if st.session_state.selected_ticker in available else 0)
+    st.session_state.selected_ticker = ticker
+
+    # Intraday bevorzugt
+    df = load_intraday(ticker)
+    source = "Minute Bars (aktuell)"
+
+    if df.empty:
+        st.info("Keine Minute-Daten → Fallback auf Daily")
+        df = daily_data.get(ticker, pd.DataFrame())
+        source = "Daily Bars (gestern)"
+
+    if not df.empty:
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
         fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="OHLC"), row=1, col=1)
         fig.add_trace(go.Bar(x=df.index, y=df['volume'], name="Volume"), row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=rsi(df['close']), name="RSI"), row=3, col=1)
-        fig.update_layout(height=800, title=f"{ticker} Daily Chart")
-        st.plotly_chart(fig, width='stretch')
+        fig.update_layout(height=800, title=f"{ticker} – {source}")
+        st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
-        st.info("Keine Chart-Daten")
+        st.info("Keine Chart-Daten verfügbar für diesen Ticker")
 
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
