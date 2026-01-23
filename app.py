@@ -57,7 +57,9 @@ def load_daily_data(symbols):
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
                 start=now_ny - timedelta(days=150),
-                end=now_ny + timedelta(days=1)  # aktuelle Kerze erzwingen
+                end=now_ny + timedelta(days=1),
+                adjustment="all"
+            )
             )
             bars = client.get_stock_bars(req).df
             for sym in batch:
