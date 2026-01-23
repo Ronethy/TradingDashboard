@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from logic.snapshot import MarketSnapshot
 
 def calculate_trend_score(s: MarketSnapshot) -> int:
