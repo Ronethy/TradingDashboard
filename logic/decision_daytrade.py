@@ -1,10 +1,7 @@
-from __future__ import annotations
-
 from logic.snapshot import MarketSnapshot
-from typing import Tuple, List
 
-def decide_daytrade(snapshot: MarketSnapshot) -> Tuple[str, List[str]]:
-    reasons: List[str] = []
+def decide_daytrade(snapshot: MarketSnapshot) -> tuple[str, list[str]]:
+    reasons = []
 
     if snapshot.market_state == "PRE":
         return "⚪ Pre-Market – warte auf Open", reasons
