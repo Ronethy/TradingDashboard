@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from logic.snapshot import MarketSnapshot
 from typing import Tuple, List
 
