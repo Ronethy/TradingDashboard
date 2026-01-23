@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 def score_to_ampel(score: int, green: int = 70, yellow: int = 45) -> str:
     if score >= green:
         return "🟢 Grün – Trade erlaubt"
