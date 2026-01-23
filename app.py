@@ -82,10 +82,18 @@ def load_intraday(ticker):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
-        if not bars.empty:
-            bars.index = bars.index.tz_convert(ny_tz)
-            return bars
-        return pd.DataFrame()
+
+        if bars.empty:
+            return pd.DataFrame()
+
+        # MultiIndex behandeln (timestamp, symbol)
+        if isinstance(bars.index, pd.MultiIndex):
+            bars = bars.reset_index(level=1, drop=True)  # symbol-Level entfernen
+
+        bars.index = bars.index.tz_convert(ny_tz)
+
+        return bars
+
     except Exception as e:
         st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
@@ -149,14 +157,14 @@ with tabs[2]:
     ticker = st.selectbox("Ticker", available, index=available.index(st.session_state.selected_ticker) if st.session_state.selected_ticker in available else 0)
     st.session_state.selected_ticker = ticker
 
-    # Intraday bevorzugt
+    # Intraday laden (aktuell)
     df = load_intraday(ticker)
     source = "Minute Bars (aktuell)"
 
     if df.empty:
         st.info("Keine Minute-Daten → Fallback auf Daily")
         df = daily_data.get(ticker, pd.DataFrame())
-        source = "Daily Bars (gestern)"
+        source = "Daily Bars (gestern oder laufend)"
 
     if not df.empty:
         fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
