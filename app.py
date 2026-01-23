@@ -53,8 +53,7 @@ def load_daily_data(symbols):
                 timeframe=TimeFrame.Day,
                 start=now_ny - timedelta(days=150),
                 end=now_ny + timedelta(days=1),
-                feed="iex",                  # ← FIX: Free-Tier-kompatibel
-                adjustment="all"
+                feed="iex"  # Free-Tier-kompatibel
             )
             bars = client.get_stock_bars(req).df
             for sym in batch:
@@ -65,7 +64,7 @@ def load_daily_data(symbols):
                 except:
                     pass
         except Exception as e:
-            st.caption(f"Batch-Fehler ({len(batch)} Symbole): {str(e)}")
+            st.caption(f"Batch-Fehler: {str(e)}")
     return data
 
 daily_data = load_daily_data(SP500_SYMBOLS)
@@ -79,7 +78,6 @@ tabs = st.tabs([
     "🟢 Trading-Entscheidung"
 ])
 
-# Early Movers
 with tabs[0]:
     st.subheader("🔥 Early Movers")
     movers = scan_early_movers(SP500_SYMBOLS, client)
@@ -88,7 +86,6 @@ with tabs[0]:
     else:
         st.dataframe(movers, width='stretch')
 
-# S&P Scanner
 with tabs[1]:
     st.subheader("🧠 S&P 500 Scanner")
     results = []
@@ -123,7 +120,6 @@ with tabs[1]:
     else:
         st.warning("Keine Daten geladen – prüfe API-Keys oder Symbol-Liste")
 
-# Chart
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
     ticker = st.session_state.selected_ticker
@@ -134,12 +130,11 @@ with tabs[2]:
         fig.add_trace(go.Bar(x=df.index, y=df['volume'], name="Volume"), row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=rsi(df['close']), name="RSI"), row=3, col=1)
         fig.update_layout(height=800, title=f"{ticker} Daily Chart")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
-        st.info("Keine Chart-Daten für diesen Ticker")
+        st.info("Keine Chart-Daten")
 
-# Trading-Entscheidung
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
     ticker = st.session_state.selected_ticker
@@ -167,12 +162,14 @@ with tabs[3]:
             col1, col2 = st.columns(2)
             with col1:
                 ampel_d, reasons_d = decide_daytrade(snap)
-                st.markdown(f"### Daytrade: {ampel_d}")
-                for r in reasons_d: st.write("• " + r)
+                st.markdown(f"Daytrade: {ampel_d}")
+                for r in reasons_d:
+                    st.write("• " + r)
             with col2:
                 ampel_s, reasons_s = decide_swing(snap)
-                st.markdown(f"### Swing: {ampel_s}")
-                for r in reasons_s: st.write("• " + r)
+                st.markdown(f"Swing: {ampel_s}")
+                for r in reasons_s:
+                    st.write("• " + r)
         else:
             st.warning("Keine Daten nach Indikator-Berechnung")
     else:
