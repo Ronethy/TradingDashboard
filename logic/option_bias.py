@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from logic.snapshot import MarketSnapshot
 
 def get_option_bias(snapshot: MarketSnapshot, score: int) -> str:
