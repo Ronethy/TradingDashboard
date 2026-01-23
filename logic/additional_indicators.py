@@ -12,7 +12,7 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     # Kopie machen & Index vollständig resetten (zu RangeIndex)
     df = df.copy().reset_index(drop=True)
 
-    # RSI berechnen – sicher und ohne chained indexing
+    # RSI berechnen
     close = df['close']
     delta = close.diff()
     gain = delta.clip(lower=0)
