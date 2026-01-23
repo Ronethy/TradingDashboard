@@ -22,30 +22,25 @@ from logic.decision_base import score_to_ampel
 
 st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
-# ── Client ────────────────
 client = StockHistoricalDataClient(
     st.secrets["ALPACA_API_KEY"],
     st.secrets["ALPACA_SECRET_KEY"]
 )
 
-# ── State ─────────────────
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 
-# ── Zeit ──────────────────
 ny_tz = pytz.timezone("America/New_York")
 now_ny = datetime.now(ny_tz)
 market_state = "PRE" if now_ny.hour < 9 else "OPEN" if now_ny.hour < 16 else "CLOSED"
 
 st.title("📊 Smart Momentum Trading Dashboard")
-st.caption(f"NYSE-Zeit: {now_ny.strftime('%H:%M')} | Markt: {'🟢 Open' if market_state == 'OPEN' else '🔴 Closed / Pre / After'}")
+st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M')}")
 
-# ── Refresh ───────────────
-if st.button("Daten neu laden (Cache leeren)"):
+if st.button("Daten aktualisieren (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
 
-# ── Daten laden ───────────
 @st.cache_data(ttl=60)
 def load_daily_data(symbols):
     data = {}
@@ -56,105 +51,117 @@ def load_daily_data(symbols):
             req = StockBarsRequest(
                 symbol_or_symbols=batch,
                 timeframe=TimeFrame.Day,
-                start=now_ny - timedelta(days=120),
+                start=now_ny - timedelta(days=150),
                 end=now_ny + timedelta(days=1),
-                feed="iex",
-                adjustment="all"
+                feed="iex"
             )
             bars = client.get_stock_bars(req).df
             for sym in batch:
                 try:
-                    df_sym = bars.xs(sym, level="symbol").copy()
+                    df_sym = bars[bars.index.get_level_values('symbol') == sym].copy()
                     if not df_sym.empty:
                         data[sym] = df_sym
                 except:
                     pass
-        except:
-            pass
+        except Exception as e:
+            st.caption(f"Batch-Fehler: {str(e)}")
     return data
+
+@st.cache_data(ttl=60)
+def load_intraday(ticker):
+    try:
+        req = StockBarsRequest(
+            symbol_or_symbols=ticker,
+            timeframe=TimeFrame.Minute,
+            start=now_ny - timedelta(days=2),
+            end=now_ny + timedelta(minutes=30),
+            feed="iex",
+            limit=10000
+        )
+        bars = client.get_stock_bars(req).df
+
+        if bars.empty:
+            return pd.DataFrame()
+
+        if isinstance(bars.index, pd.MultiIndex):
+            bars = bars.reset_index(level=1, drop=True)
+
+        bars.index = bars.index.tz_convert(ny_tz)
+
+        return bars
+
+    except Exception as e:
+        st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
+        return pd.DataFrame()
 
 daily_data = load_daily_data(SP500_SYMBOLS)
 
-# ── Tabs ──────────────────
+st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
+
 tabs = st.tabs([
     "🔥 Early Movers",
-    "🧠 S&P Scanner",
-    "📈 Chart",
-    "🟢 Entscheidung"
+    "🧠 S&P 500 Scanner",
+    "📈 Chart Analyse",
+    "🟢 Trading-Entscheidung"
 ])
 
-# ── Early Movers ──────────
 with tabs[0]:
-    st.subheader("🔥 Early Movers – Gap ≥ 0.8%")
-    movers = scan_early_movers(daily_data)  # ← jetzt nur daily_data übergeben
+    st.subheader("🔥 Early Movers")
+    movers = scan_early_movers(daily_data)
     if movers.empty:
-        st.info("Keine signifikanten Gaps gefunden")
+        st.info("Keine Early Movers gefunden")
     else:
-        st.dataframe(movers, width='stretch', hide_index=True)
+        st.dataframe(movers, width='stretch')
 
-        # Optional: Symbol auswählen
-        selected = st.selectbox("Zu Detail springen:", ["—"] + movers["Symbol"].tolist())
-        if selected != "—":
-            st.session_state.selected_ticker = selected
-            st.rerun()
-
-# ── S&P Scanner ───────────
 with tabs[1]:
-    st.subheader("🧠 S&P 500 Trend-Score Ranking")
+    st.subheader("🧠 S&P 500 Scanner")
 
     rows = []
     for sym, df in daily_data.items():
-        try:
-            if len(df) < 30:  # mehr Historie für stabile EMAs/RSI
-                continue
+        if len(df) < 20:
+            continue
 
-            # Indikatoren berechnen
-            df_ind = df.copy()
-            df_ind["ema9"] = ema(df_ind["close"], 9)
-            df_ind["ema20"] = ema(df_ind["close"], 20)
-            df_ind["ema50"] = ema(df_ind["close"], 50)
-            df_ind["rsi"] = rsi(df_ind["close"])
-            df_ind["atr"] = atr(df_ind)
-            df_ind.dropna(inplace=True)
+        # Indikatoren berechnen
+        df_ind = df.copy()
+        df_ind["ema9"] = ema(df_ind["close"], 9)
+        df_ind["ema20"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
+        df_ind["rsi"] = rsi(df_ind["close"])
+        df_ind["atr"] = atr(df_ind)
+        df_ind.dropna(inplace=True)
 
-            if df_ind.empty or len(df_ind) < 10:
-                continue
+        if df_ind.empty:
+            continue
 
-            latest = df_ind.iloc[-1]
+        latest = df_ind.iloc[-1]
+        vol_mean = df_ind["volume"].mean()
+        vol_ratio = latest["volume"] / vol_mean if vol_mean > 0 else 1.0
 
-            # Volumen-Ratio (Durchschnitt der letzten 20 Tage)
-            vol_mean = df_ind["volume"].rolling(20).mean().iloc[-1] if len(df_ind) >= 20 else df_ind["volume"].mean()
-            vol_ratio = latest["volume"] / vol_mean if vol_mean > 0 else 1.0
-
-            # Snapshot erstellen
-            snap = MarketSnapshot(
-                symbol=sym,
-                price=float(latest["close"]),
-                rsi=float(latest["rsi"]),
-                ema9=float(latest["ema9"]),
-                ema20=float(latest["ema20"]),
-                ema50=float(latest["ema50"]),
-                atr=float(latest["atr"]),
-                volume_ratio=vol_ratio,
-                market_state=market_state
-            )
-
-            score = calculate_trend_score(snap)
-            rows.append({"Symbol": sym, "Trend-Score": score})
-
-        except Exception as e:
-            st.caption(f"Fehler bei {sym}: {str(e)[:60]}…")
-
-    if rows:
-        df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
-        st.dataframe(
-            df_scores.style.format({"Trend-Score": "{:.0f}"}),
-            width='stretch',
-            hide_index=True
+        snap = MarketSnapshot(
+            symbol=sym,
+            price=float(latest["close"]),
+            rsi=float(latest["rsi"]),
+            ema9=float(latest["ema9"]),
+            ema20=float(latest["ema20"]),
+            ema50=float(latest["ema50"]),
+            atr=float(latest["atr"]),
+            volume_ratio=vol_ratio,
+            market_state=market_state
         )
-    else:
-        st.warning("Keine gültigen Trend-Scores berechnet – prüfe Datenqualität oder Historie")
-# ── Chart ─────────────────
+
+        score = calculate_trend_score(snap)
+        rows.append({"Symbol": sym, "Trend-Score": score})
+
+    df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
+    st.dataframe(
+        df_scores.style.format({"Trend-Score": "{:.0f}"}),
+        width='stretch',
+        hide_index=True
+    )
+
+    # Optional: Klick auf Zeile → Ticker setzen (Streamlit Dataframe hat derzeit kein natives on_click)
+    st.info("Tipp: Kopiere das Symbol und wähle es unten im Chart-Tab aus.")
+
 with tabs[2]:
     st.subheader("📈 Chart & Indikatoren")
 
@@ -222,7 +229,7 @@ with tabs[2]:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.warning(f"Keine ausreichenden Daten für {ticker}")
@@ -236,41 +243,67 @@ with tabs[3]:
 
     if ticker in daily_data and len(daily_data[ticker]) >= 20:
         df = daily_data[ticker]
-        score = calculate_trend_score(df)
-        bias = get_option_bias(score)
-        last_price = df["close"].iloc[-1]
-        last_atr = atr(df).iloc[-1] if "ATR" in df else 0
+        # Indikatoren berechnen
+        df_ind = df.copy()
+        df_ind["ema9"] = ema(df_ind["close"], 9)
+        df_ind["ema20"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
+        df_ind["rsi"] = rsi(df_ind["close"])
+        df_ind["atr"] = atr(df_ind)
 
-        plan = trade_plan(last_price, last_atr)
+        df_ind.dropna(inplace=True)
 
-        # Ampel-Logik visuell
-        if score >= 70:
-            ampelfarbe = "🟢 Stark Bullish"
-            st.success(ampelfarbe)
-        elif score >= 40:
-            ampelfarbe = "🟡 Neutral / vorsichtig"
-            st.warning(ampelfarbe)
+        if not df_ind.empty:
+            latest = df_ind.iloc[-1]
+            vol_mean = df_ind["volume"].mean()
+            vol_ratio = latest["volume"] / vol_mean if vol_mean > 0 else 1.0
+
+            snap = MarketSnapshot(
+                symbol=ticker,
+                price=float(latest["close"]),
+                rsi=float(latest["rsi"]),
+                ema9=float(latest["ema9"]),
+                ema20=float(latest["ema20"]),
+                ema50=float(latest["ema50"]),
+                atr=float(latest["atr"]),
+                volume_ratio=vol_ratio,
+                market_state=market_state
+            )
+
+            score = calculate_trend_score(snap)
+            bias = get_option_bias(snap, score)
+            plan = generate_trade_plan(snap, score)
+
+            # Ampel-Logik visuell
+            if score >= 70:
+                ampelfarbe = "🟢 Stark Bullish"
+                st.success(ampelfarbe)
+            elif score >= 40:
+                ampelfarbe = "🟡 Neutral / vorsichtig"
+                st.warning(ampelfarbe)
+            else:
+                ampelfarbe = "🔴 Bearish / meiden"
+                st.error(ampelfarbe)
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**Trend-Score Breakdown**")
+                st.write(f"Gesamt-Score: **{score}** / 100")
+                st.write("• EMA20 > EMA50 → +40")
+                st.write("• Close > EMA20 → +30")
+                st.write("• RSI 50–70 → +30")
+
+            with col2:
+                st.markdown("**Option Bias & Strategie**")
+                st.info(f"**{bias}** empfohlen")
+
+            st.markdown("**Einfacher Trade-Plan (ATR-basiert)**")
+            st.json(plan)
+
+            st.caption("Hinweis: Das ist KEINE Handelsempfehlung – nur technisches Scoring. Risikomanagement selbst verantworten.")
+
         else:
-            ampelfarbe = "🔴 Bearish / meiden"
-            st.error(ampelfarbe)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("**Trend-Score Breakdown**")
-            st.write(f"Gesamt-Score: **{score}** / 100")
-            st.write("• EMA20 > EMA50 → +40")
-            st.write("• Close > EMA20 → +30")
-            st.write("• RSI 50–70 → +30")
-
-        with col2:
-            st.markdown("**Option Bias & Strategie**")
-            st.info(f"**{bias}** empfohlen")
-
-        st.markdown("**Einfacher Trade-Plan (ATR-basiert)**")
-        st.json(plan)
-
-        st.caption("Hinweis: Das ist KEINE Handelsempfehlung – nur technisches Scoring. Risikomanagement selbst verantworten.")
-
+            st.error("Keine Daten verfügbar")
     else:
         st.info("Wähle zuerst eine Aktie im Chart-Tab aus oder warte auf Daten.")
