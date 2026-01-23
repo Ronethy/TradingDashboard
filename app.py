@@ -85,20 +85,17 @@ tabs = st.tabs([
 
 # ── Early Movers ──────────
 with tabs[0]:
-    st.subheader("🔥 Early Movers (Gap ≥ 1%)")
-
-    movers = scan_early_movers(daily_data)
+    st.subheader("🔥 Early Movers – Gap ≥ 0.8%")
+    movers = scan_early_movers(daily_data)  # ← jetzt nur daily_data übergeben
     if movers.empty:
-        st.info("Aktuell keine signifikanten Gaps → Markt ist ruhig")
+        st.info("Keine signifikanten Gaps gefunden")
     else:
-        # Klickbar machen → Ticker auswählen
-        st.dataframe(
-            movers.style.format(precision=2),
-            width='stretch',
-            hide_index=True
-        )
-        if st.button("→ Zum ausgewählten Symbol springen", key="jump_early"):
-            st.session_state.selected_ticker = movers.iloc[0]["Symbol"]
+        st.dataframe(movers, width='stretch', hide_index=True)
+
+        # Optional: Symbol auswählen
+        selected = st.selectbox("Zu Detail springen:", ["—"] + movers["Symbol"].tolist())
+        if selected != "—":
+            st.session_state.selected_ticker = selected
             st.rerun()
 
 # ── S&P Scanner ───────────
