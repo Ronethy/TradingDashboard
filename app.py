@@ -20,19 +20,16 @@ from logic.decision_swing import decide_swing
 from logic.premarket_scanner import scan_early_movers
 from logic.decision_base import score_to_ampel
 
-st.set_page_config(page_title="Momentum Trading Dashboard", layout="wide")
+st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
-# ── Client ────────────────
 client = StockHistoricalDataClient(
     st.secrets["ALPACA_API_KEY"],
     st.secrets["ALPACA_SECRET_KEY"]
 )
 
-# ── State ─────────────────
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 
-# ── Zeit ──────────────────
 ny_tz = pytz.timezone("America/New_York")
 now_ny = datetime.now(ny_tz)
 market_state = "PRE" if now_ny.hour < 9 else "OPEN" if now_ny.hour < 16 else "CLOSED"
@@ -40,12 +37,10 @@ market_state = "PRE" if now_ny.hour < 9 else "OPEN" if now_ny.hour < 16 else "CL
 st.title("📊 Smart Momentum Trading Dashboard")
 st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M')}")
 
-# ── Refresh ───────────────
 if st.button("Daten neu laden (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
 
-# ── Daten laden ───────────
 @st.cache_data(ttl=60)
 def load_daily_data(symbols):
     data = {}
@@ -58,9 +53,9 @@ def load_daily_data(symbols):
                 timeframe=TimeFrame.Day,
                 start=now_ny - timedelta(days=150),
                 end=now_ny + timedelta(days=1),
+                feed="iex",                  # ← FIX: Free-Tier-kompatibel
                 adjustment="all"
             )
-            
             bars = client.get_stock_bars(req).df
             for sym in batch:
                 try:
@@ -70,12 +65,13 @@ def load_daily_data(symbols):
                 except:
                     pass
         except Exception as e:
-            st.write(f"Batch-Fehler: {str(e)}")
+            st.caption(f"Batch-Fehler ({len(batch)} Symbole): {str(e)}")
     return data
 
 daily_data = load_daily_data(SP500_SYMBOLS)
 
-# ── Tabs ──────────────────
+st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
+
 tabs = st.tabs([
     "🔥 Early Movers",
     "🧠 S&P 500 Scanner",
@@ -83,7 +79,7 @@ tabs = st.tabs([
     "🟢 Trading-Entscheidung"
 ])
 
-# ── Early Movers ──────────
+# Early Movers
 with tabs[0]:
     st.subheader("🔥 Early Movers")
     movers = scan_early_movers(SP500_SYMBOLS, client)
@@ -92,7 +88,7 @@ with tabs[0]:
     else:
         st.dataframe(movers, width='stretch')
 
-# ── S&P Scanner ───────────
+# S&P Scanner
 with tabs[1]:
     st.subheader("🧠 S&P 500 Scanner")
     results = []
@@ -125,67 +121,59 @@ with tabs[1]:
         df_res = pd.DataFrame(results).sort_values("Score", ascending=False).head(30)
         st.dataframe(df_res, width='stretch')
     else:
-        st.warning("Keine Daten – API-Keys prüfen")
+        st.warning("Keine Daten geladen – prüfe API-Keys oder Symbol-Liste")
 
-# ── Chart ─────────────────
+# Chart
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
     ticker = st.session_state.selected_ticker
-    if ticker in daily_data:
+    if ticker in daily_data and not daily_data[ticker].empty:
         df = daily_data[ticker]
-        if not df.empty:
-            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
-            fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="OHLC"), row=1, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=df['volume'], name="Volume"), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=rsi(df['close']), name="RSI"), row=3, col=1)
-            fig.update_layout(height=800, title=f"{ticker} Daily Chart")
-            st.plotly_chart(fig, width='stretch')
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
-        else:
-            st.info("Keine Chart-Daten")
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
+        fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="OHLC"), row=1, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df['volume'], name="Volume"), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=rsi(df['close']), name="RSI"), row=3, col=1)
+        fig.update_layout(height=800, title=f"{ticker} Daily Chart")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
-        st.info("Ticker nicht geladen")
+        st.info("Keine Chart-Daten für diesen Ticker")
 
-# ── Trading-Entscheidung ──
+# Trading-Entscheidung
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
     ticker = st.session_state.selected_ticker
-    if ticker in daily_data:
-        df = daily_data[ticker]
-        if len(df) >= 30:
-            df["ema9"] = ema(df["close"], 9)
-            df["ema20"] = ema(df["close"], 20)
-            df["ema50"] = ema(df["close"], 50)
-            df["rsi"] = rsi(df["close"])
-            df["atr"] = atr(df)
-            df.dropna(inplace=True)
-            if not df.empty:
-                latest = df.iloc[-1]
-                vol_ratio = latest["volume"] / df["volume"].mean() if df["volume"].mean() > 0 else 1.0
-                snap = MarketSnapshot(ticker, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio, market_state)
-                score = calculate_trend_score(snap)
-                st.markdown(f"**Score:** {score} → {score_to_ampel(score)}")
-                bias = get_option_bias(snap, score)
-                st.markdown(f"**Bias:** {bias}")
-                plan = generate_trade_plan(snap, score)
-                if plan:
-                    st.json(plan)
-                else:
-                    st.info("Kein Plan")
-                col1, col2 = st.columns(2)
-                with col1:
-                    ampel_d, reasons_d = decide_daytrade(snap)
-                    st.markdown(f"Daytrade: {ampel_d}")
-                    for r in reasons_d:
-                        st.write("• " + r)
-                with col2:
-                    ampel_s, reasons_s = decide_swing(snap)
-                    st.markdown(f"Swing: {ampel_s}")
-                    for r in reasons_s:
-                        st.write("• " + r)
+    if ticker in daily_data and len(daily_data[ticker]) >= 30:
+        df = daily_data[ticker].copy()
+        df["ema9"] = ema(df["close"], 9)
+        df["ema20"] = ema(df["close"], 20)
+        df["ema50"] = ema(df["close"], 50)
+        df["rsi"] = rsi(df["close"])
+        df["atr"] = atr(df)
+        df.dropna(inplace=True)
+        if not df.empty:
+            latest = df.iloc[-1]
+            vol_ratio = latest["volume"] / df["volume"].mean() if df["volume"].mean() > 0 else 1.0
+            snap = MarketSnapshot(ticker, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio, market_state)
+            score = calculate_trend_score(snap)
+            st.markdown(f"**Trend-Score:** {score} → {score_to_ampel(score)}")
+            bias = get_option_bias(snap, score)
+            st.markdown(f"**Option Bias:** {bias}")
+            plan = generate_trade_plan(snap, score)
+            if plan:
+                st.json(plan)
             else:
-                st.warning("NaN nach Indikatoren")
+                st.info("Kein valider Trade-Plan")
+            col1, col2 = st.columns(2)
+            with col1:
+                ampel_d, reasons_d = decide_daytrade(snap)
+                st.markdown(f"### Daytrade: {ampel_d}")
+                for r in reasons_d: st.write("• " + r)
+            with col2:
+                ampel_s, reasons_s = decide_swing(snap)
+                st.markdown(f"### Swing: {ampel_s}")
+                for r in reasons_s: st.write("• " + r)
         else:
-            st.warning("Zu wenige Bars")
+            st.warning("Keine Daten nach Indikator-Berechnung")
     else:
-        st.info("Ticker nicht verfügbar")
+        st.info("Wähle einen Ticker mit ausreichend Daten")
