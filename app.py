@@ -40,7 +40,7 @@ st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M'
 if market_state == "PRE":
     st.warning("Pre-Market: Viele Scores & Ampele sind eingeschränkt – warte auf Open (9:30 ET)")
 
-if st.button("Daten neu laden (Cache leeren)"):
+if st.button("Daten aktualisieren (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
 
@@ -83,28 +83,88 @@ tabs = st.tabs([
 
 # ── Early Movers ────────────────────────────────────────────────────────────────
 with tabs[0]:
-    st.subheader("🔥 Early Movers")
+    st.subheader("🔥 Early Movers – mit Empfehlung & Farben")
 
-    movers = scan_early_movers(daily_data)
-    if movers.empty:
-        st.info("Keine Early Movers gefunden")
-    else:
-        st.dataframe(movers, width='stretch', hide_index=True)
+    enhanced_movers = []
+    for sym, df in daily_data.items():
+        if len(df) < 2:
+            continue
 
-        # Symbol-Auswahl mit explizitem State-Update
-        selected_early = st.selectbox(
-            "Zu Detail springen:",
-            options=["—"] + movers["Symbol"].tolist(),
-            key="early_select"
-        )
+        prev_close = df["close"].iloc[-2]
+        current_open = df["open"].iloc[-1]
+        gap_pct = (current_open - prev_close) / prev_close * 100
+        abs_gap = abs(gap_pct)
 
-        if selected_early != "—" and selected_early != st.session_state.selected_ticker:
-            st.session_state.selected_ticker = selected_early
+        volume = df["volume"].iloc[-1]
+        vol_avg = df["volume"].mean()
+        vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
+
+        # Snapshot für Score
+        df_ind = df.copy()
+        df_ind["ema9"] = ema(df_ind["close"], 9)
+        df_ind["ema20"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
+        df_ind["rsi"] = rsi(df_ind["close"])
+        df_ind["atr"] = atr(df_ind)
+        df_ind.dropna(inplace=True)
+
+        score = 0
+        if not df_ind.empty:
+            latest = df_ind.iloc[-1]
+            vol_ratio_ind = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
+            snap = MarketSnapshot(sym, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio_ind, market_state)
+            score = calculate_trend_score(snap)
+
+        enhanced_movers.append({
+            "Symbol": sym,
+            "Gap %": round(gap_pct, 2),
+            "Abs Gap": abs_gap,
+            "Vol Ratio": round(vol_ratio, 2),
+            "Score": score
+        })
+
+    if enhanced_movers:
+        df_movers = pd.DataFrame(enhanced_movers)
+        df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
+
+        # Empfehlung & Farben
+        def get_recommendation(row):
+            gap = row["Gap %"]
+            score = row["Score"]
+            if score >= 70 or gap > 3:
+                return "Kaufen / Long priorisieren"
+            elif score >= 50 or gap > 2:
+                return "Beobachten / Watchlist"
+            else:
+                return "Vermeiden"
+
+        df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
+
+        # Styling-Funktion
+        def highlight_row(row):
+            rec = row["Empfehlung"]
+            if "Kaufen" in rec:
+                return ['background-color: #d4edda; color: black'] * len(row)
+            elif "Beobachten" in rec:
+                return ['background-color: #fff3cd; color: black'] * len(row)
+            else:
+                return ['background-color: #f8d7da; color: black'] * len(row)
+
+        styled = df_movers.style.apply(highlight_row, axis=1)
+
+        st.dataframe(styled, width='stretch', hide_index=True)
+
+        # Symbol-Auswahl
+        selected = st.selectbox("Zu Detail springen:", ["—"] + df_movers["Symbol"].tolist())
+        if selected != "—":
+            st.session_state.selected_ticker = selected
             st.rerun()
+    else:
+        st.info("Keine Early Movers gefunden")
 
 # ── S&P 500 Scanner ─────────────────────────────────────────────────────────────
 with tabs[1]:
-    st.subheader("🧠 S&P 500 Scanner")
+    st.subheader("🧠 S&P 500 Scanner – mit Farben & Empfehlung")
 
     rows = []
     for sym, df in daily_data.items():
@@ -138,22 +198,38 @@ with tabs[1]:
         )
 
         score = calculate_trend_score(snap)
-        rows.append({"Symbol": sym, "Trend-Score": score})
+        bias = get_option_bias(snap, score)
+
+        # Empfehlung
+        rec = "Vermeiden"
+        if score >= 70:
+            rec = "Kaufen / Long priorisieren"
+        elif score >= 50:
+            rec = "Beobachten / Watchlist"
+
+        rows.append({
+            "Symbol": sym,
+            "Score": score,
+            "Bias": bias,
+            "Empfehlung": rec
+        })
 
     if rows:
-        df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
-        st.dataframe(df_scores, width='stretch', hide_index=True)
+        df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
 
-        # Symbol-Auswahl für Scanner
-        selected_scanner = st.selectbox(
-            "Zu Detail springen (aus Scanner):",
-            options=["—"] + df_scores["Symbol"].head(20).tolist(),
-            key="scanner_select"
-        )
+        # Styling
+        def highlight_scanner(row):
+            rec = row["Empfehlung"]
+            if "Kaufen" in rec:
+                return ['background-color: #d4edda; color: black'] * len(row)
+            elif "Beobachten" in rec:
+                return ['background-color: #fff3cd; color: black'] * len(row)
+            else:
+                return ['background-color: #f8d7da; color: black'] * len(row)
 
-        if selected_scanner != "—" and selected_scanner != st.session_state.selected_ticker:
-            st.session_state.selected_ticker = selected_scanner
-            st.rerun()
+        styled_scanner = df_scores.style.apply(highlight_scanner, axis=1)
+
+        st.dataframe(styled_scanner, width='stretch', hide_index=True)
     else:
         st.warning("Keine gültigen Scores berechnet")
 
@@ -161,7 +237,6 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
 
-    # Ticker-Auswahl mit aktueller State
     available = list(daily_data.keys()) if daily_data else ["AAPL"]
     ticker = st.selectbox(
         "Ticker auswählen",
@@ -170,14 +245,12 @@ with tabs[2]:
         key="chart_select"
     )
 
-    # State synchronisieren (wichtig!)
     if ticker != st.session_state.selected_ticker:
         st.session_state.selected_ticker = ticker
         st.rerun()
 
     if ticker in daily_data and not daily_data[ticker].empty:
         df = daily_data[ticker].copy()
-
         df["ema20"] = ema(df["close"], 20)
         df["ema50"] = ema(df["close"], 50)
         df["RSI"] = rsi(df["close"])
