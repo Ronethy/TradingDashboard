@@ -6,7 +6,8 @@ def scan_early_movers(daily_data, max_results=20, min_gap_pct=0.8):
         if len(df) < 2:
             continue
 
-        df = df.sort_index()  # sicherstellen, dass chronologisch
+        df = df.sort_index()
+
         prev_close = df["close"].iloc[-2]
         current_open = df["open"].iloc[-1]
 
