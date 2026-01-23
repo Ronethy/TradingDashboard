@@ -4,3 +4,4 @@ numpy
 alpaca-py
 pandas_ta
 plotly
+pytz
