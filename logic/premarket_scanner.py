@@ -1,38 +1,29 @@
 import pandas as pd
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 
-def scan_early_movers(symbols, client, max_results=20, min_gap_pct=0.8):
+def scan_early_movers(daily_data, max_results=20, min_gap_pct=0.8):
     results = []
-    for symbol in symbols:
-        try:
-            req = StockBarsRequest(
-                symbol_or_symbols=symbol,
-                timeframe=TimeFrame.Day,
-                limit=3,
-                feed="iex"
-            )
-            bars = client.get_stock_bars(req).df
-            if len(bars) < 2:
-                continue
+    for symbol, df in daily_data.items():
+        if len(df) < 2:
+            continue
 
-            prev_close = bars["close"].iloc[-2]
-            current_open = bars["open"].iloc[-1]
-            gap = (current_open - prev_close) / prev_close * 100
+        df = df.sort_index()  # sicherstellen, dass chronologisch
+        prev_close = df["close"].iloc[-2]
+        current_open = df["open"].iloc[-1]
 
-            if abs(gap) >= min_gap_pct:
-                results.append({
-                    "Symbol": symbol,
-                    "Gap %": round(gap, 2),
-                    "Abs Gap": abs(gap),
-                    "Last": round(bars["close"].iloc[-1], 2),
-                    "Volume": int(bars["volume"].iloc[-1])
-                })
-        except:
-            pass
+        gap_pct = (current_open - prev_close) / prev_close * 100
+        abs_gap = abs(gap_pct)
+
+        if abs_gap >= min_gap_pct:
+            results.append({
+                "Symbol": symbol,
+                "Gap %": round(gap_pct, 2),
+                "Abs Gap": abs_gap,
+                "Last": round(df["close"].iloc[-1], 2),
+                "Volume": int(df["volume"].iloc[-1])
+            })
 
     if not results:
         return pd.DataFrame()
 
-    df = pd.DataFrame(results)
-    return df.sort_values("Abs Gap", ascending=False).head(max_results)
+    df_res = pd.DataFrame(results)
+    return df_res.sort_values("Abs Gap", ascending=False).head(max_results)
