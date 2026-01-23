@@ -1,3 +1,5 @@
+from logic.snapshot import MarketSnapshot
+
 def get_option_bias(snapshot: MarketSnapshot, score: int) -> str:
     if score < 60:
         return "NEUTRAL / kein Options-Trade"
