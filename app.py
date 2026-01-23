@@ -60,7 +60,7 @@ def load_daily_data(symbols):
                 end=now_ny + timedelta(days=1),
                 adjustment="all"
             )
-            )
+            
             bars = client.get_stock_bars(req).df
             for sym in batch:
                 try:
