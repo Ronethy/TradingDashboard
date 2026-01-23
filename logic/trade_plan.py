@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from logic.snapshot import MarketSnapshot
 
 def generate_trade_plan(snapshot: MarketSnapshot, score: int) -> dict | None:
