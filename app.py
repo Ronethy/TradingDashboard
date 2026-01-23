@@ -104,22 +104,56 @@ with tabs[1]:
 
     rows = []
     for sym, df in daily_data.items():
-        if len(df) < 20:
-            continue
-        score = calculate_trend_score(df)
-        rows.append({"Symbol": sym, "Trend-Score": score})
+        try:
+            if len(df) < 30:  # mehr Historie für stabile EMAs/RSI
+                continue
 
-    df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
+            # Indikatoren berechnen
+            df_ind = df.copy()
+            df_ind["ema9"] = ema(df_ind["close"], 9)
+            df_ind["ema20"] = ema(df_ind["close"], 20)
+            df_ind["ema50"] = ema(df_ind["close"], 50)
+            df_ind["rsi"] = rsi(df_ind["close"])
+            df_ind["atr"] = atr(df_ind)
+            df_ind.dropna(inplace=True)
 
-    st.dataframe(
-        df_scores.style.format({"Trend-Score": "{:.0f}"}),
-        width='stretch',
-        hide_index=True
-    )
+            if df_ind.empty or len(df_ind) < 10:
+                continue
 
-    # Optional: Klick auf Zeile → Ticker setzen (Streamlit Dataframe hat derzeit kein natives on_click)
-    st.info("Tipp: Kopiere das Symbol und wähle es unten im Chart-Tab aus.")
+            latest = df_ind.iloc[-1]
 
+            # Volumen-Ratio (Durchschnitt der letzten 20 Tage)
+            vol_mean = df_ind["volume"].rolling(20).mean().iloc[-1] if len(df_ind) >= 20 else df_ind["volume"].mean()
+            vol_ratio = latest["volume"] / vol_mean if vol_mean > 0 else 1.0
+
+            # Snapshot erstellen
+            snap = MarketSnapshot(
+                symbol=sym,
+                price=float(latest["close"]),
+                rsi=float(latest["rsi"]),
+                ema9=float(latest["ema9"]),
+                ema20=float(latest["ema20"]),
+                ema50=float(latest["ema50"]),
+                atr=float(latest["atr"]),
+                volume_ratio=vol_ratio,
+                market_state=market_state
+            )
+
+            score = calculate_trend_score(snap)
+            rows.append({"Symbol": sym, "Trend-Score": score})
+
+        except Exception as e:
+            st.caption(f"Fehler bei {sym}: {str(e)[:60]}…")
+
+    if rows:
+        df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
+        st.dataframe(
+            df_scores.style.format({"Trend-Score": "{:.0f}"}),
+            width='stretch',
+            hide_index=True
+        )
+    else:
+        st.warning("Keine gültigen Trend-Scores berechnet – prüfe Datenqualität oder Historie")
 # ── Chart ─────────────────
 with tabs[2]:
     st.subheader("📈 Chart & Indikatoren")
