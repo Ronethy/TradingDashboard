@@ -4,6 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pytz
 from datetime import datetime, timedelta
+import requests  # für Alpha Vantage News
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -26,6 +27,11 @@ client = StockHistoricalDataClient(
     st.secrets["ALPACA_API_KEY"],
     st.secrets["ALPACA_SECRET_KEY"]
 )
+
+# News-API-Key holen
+alpha_vantage_key = st.secrets.get("ALPHA_VANTAGE_KEY", None)
+if not alpha_vantage_key:
+    st.warning("Alpha Vantage Key fehlt in st.secrets → News-Funktion deaktiviert")
 
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
@@ -86,9 +92,8 @@ def load_intraday(ticker):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex behandeln (timestamp, symbol)
         if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.reset_index(level=1, drop=True)  # symbol-Level entfernen
+            bars = bars.reset_index(level=1, drop=True)
 
         bars.index = bars.index.tz_convert(ny_tz)
 
@@ -97,6 +102,23 @@ def load_intraday(ticker):
     except Exception as e:
         st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_stock_news(ticker, api_key, limit=5):
+    if not api_key:
+        return []
+    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&limit={limit}&apikey={api_key}"
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("feed", [])[:limit]
+        else:
+            st.caption(f"News-Fehler {response.status_code}: {response.text[:100]}")
+            return []
+    except Exception as e:
+        st.caption(f"News-Request-Fehler: {str(e)}")
+        return []
 
 daily_data = load_daily_data(SP500_SYMBOLS)
 
@@ -157,7 +179,6 @@ with tabs[2]:
     ticker = st.selectbox("Ticker", available, index=available.index(st.session_state.selected_ticker) if st.session_state.selected_ticker in available else 0)
     st.session_state.selected_ticker = ticker
 
-    # Intraday laden (aktuell)
     df = load_intraday(ticker)
     source = "Minute Bars (aktuell)"
 
@@ -201,6 +222,26 @@ with tabs[3]:
                 st.json(plan)
             else:
                 st.info("Kein valider Trade-Plan")
+
+            # News abrufen und anzeigen
+            st.subheader("Aktuelle News & Sentiment")
+            news = get_stock_news(ticker, alpha_vantage_key, limit=5)
+            if news:
+                for item in news:
+                    title = item.get("title", "No title")
+                    url = item.get("url", "#")
+                    sentiment = item.get("overall_sentiment_label", "Neutral")
+                    sentiment_score = item.get("overall_sentiment_score", 0)
+                    relevance = item.get("relevance_score", 0)
+                    time = item.get("time_published", "N/A")
+
+                    color = "green" if "Bullish" in sentiment else "red" if "Bearish" in sentiment else "gray"
+                    st.markdown(f"**[{title}]({url})**")
+                    st.caption(f"{time} | Sentiment: **{sentiment}** (Score: {sentiment_score:.2f}) | Relevanz: {relevance:.2f}")
+                    st.markdown("---")
+            else:
+                st.info("Keine News verfügbar oder API-Key fehlt")
+
             col1, col2 = st.columns(2)
             with col1:
                 ampel_d, reasons_d = decide_daytrade(snap)
