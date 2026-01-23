@@ -6,19 +6,26 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     RSI-Divergenz-Erkennung (letzte lookback Bars)
     Gibt 'Bullish', 'Bearish' oder 'Keine' zurück.
     """
+    # Mindestlänge prüfen
     if len(df) < lookback + rsi_period * 2:
         return "Keine (zu wenig Daten)"
 
     # Kopie machen & MultiIndex entfernen
     df = df.copy()
     if isinstance(df.index, pd.MultiIndex):
-        df = df.reset_index(level=1, drop=True)  # Symbol-Level droppen
+        # Nur Timestamp-Level behalten
+        df = df.reset_index(level=1, drop=True)
 
-    # Sicherstellen: chronologisch sortiert
+    # Sicherstellen: chronologisch sortiert (nach Timestamp)
     df = df.sort_index()
 
-    # RSI sicher berechnen
+    # Close-Spalte prüfen
+    if 'close' not in df.columns or 'low' not in df.columns:
+        return "Keine (fehlende Spalten: close/low)"
+
     close = df['close']
+
+    # RSI berechnen – sicher und ohne chained indexing
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -26,8 +33,14 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     avg_gain = gain.rolling(window=rsi_period, min_periods=rsi_period).mean()
     avg_loss = loss.rolling(window=rsi_period, min_periods=rsi_period).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)  # Division durch 0 vermeiden
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     df['rsi'] = 100 - (100 / (1 + rs))
+
+    # NaN entfernen für sichere Berechnung
+    df = df.dropna(subset=['rsi', 'low'])
+
+    if len(df) < lookback:
+        return "Keine (nach NaN-Entfernung zu wenig Daten)"
 
     # Slices bilden
     recent_slice = df.iloc[-lookback:]
@@ -36,7 +49,7 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(recent_slice) < 2 or len(prev_slice) < 2:
         return "Keine"
 
-    # Tiefs finden
+    # Preis- und RSI-Tiefs finden – mit .loc statt chained iloc
     recent_low_idx = recent_slice['low'].idxmin()
     recent_low_price = recent_slice['low'].min()
     recent_low_rsi = recent_slice.loc[recent_low_idx, 'rsi']
@@ -45,6 +58,7 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     prev_low_price = prev_slice['low'].min()
     prev_low_rsi = prev_slice.loc[prev_low_idx, 'rsi']
 
+    # NaN-Check
     if pd.isna(recent_low_rsi) or pd.isna(prev_low_rsi):
         return "Keine (NaN in RSI)"
 
@@ -62,6 +76,11 @@ def macd_info(df, fast=12, slow=26, signal=9):
     """
     if len(df) < slow + signal:
         return {"MACD": None, "Signal": None, "Histogramm": None, "Interpretation": "Nicht genug Daten"}
+
+    # Kopie & MultiIndex entfernen
+    df = df.copy()
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index(level=1, drop=True)
 
     ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
     ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
