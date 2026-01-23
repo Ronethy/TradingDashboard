@@ -4,7 +4,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import pytz
 from datetime import datetime, timedelta
-import requests
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -28,10 +27,6 @@ client = StockHistoricalDataClient(
     st.secrets["ALPACA_SECRET_KEY"]
 )
 
-alpha_vantage_key = st.secrets.get("ALPHA_VANTAGE_KEY", None)
-if not alpha_vantage_key:
-    st.warning("Alpha Vantage Key fehlt → News deaktiviert (füge in Secrets hinzu)")
-
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = "AAPL"
 
@@ -45,7 +40,7 @@ st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M'
 if market_state == "PRE":
     st.warning("Pre-Market: Viele Scores & Ampele sind eingeschränkt – warte auf Open (9:30 ET)")
 
-if st.button("Daten aktualisieren (Cache leeren)"):
+if st.button("Daten neu laden (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
 
@@ -75,48 +70,6 @@ def load_daily_data(symbols):
             st.caption(f"Batch-Fehler: {str(e)}")
     return data
 
-@st.cache_data(ttl=60)
-def load_intraday(ticker):
-    try:
-        req = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Minute,
-            start=now_ny - timedelta(days=2),
-            end=now_ny + timedelta(minutes=30),
-            feed="iex",
-            limit=10000
-        )
-        bars = client.get_stock_bars(req).df
-
-        if bars.empty:
-            return pd.DataFrame()
-
-        if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.reset_index(level=1, drop=True)
-
-        bars.index = bars.index.tz_convert(ny_tz)
-
-        return bars
-
-    except Exception as e:
-        st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
-        return pd.DataFrame()
-
-@st.cache_data(ttl=300)
-def get_stock_news(ticker, api_key, limit=5):
-    if not api_key:
-        return []
-    url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&limit={limit}&apikey={api_key}"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("feed", [])[:limit]
-        else:
-            return []
-    except:
-        return []
-
 daily_data = load_daily_data(SP500_SYMBOLS)
 
 st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
@@ -130,107 +83,28 @@ tabs = st.tabs([
 
 # ── Early Movers ────────────────────────────────────────────────────────────────
 with tabs[0]:
-    st.subheader("🔥 Early Movers – verbessert")
-    st.caption("Gap + Volumen + Score + News-Sentiment (nur Top-Kandidaten)")
+    st.subheader("🔥 Early Movers")
 
-    enhanced_movers = []
-    for sym, df in daily_data.items():
-        if len(df) < 2:
-            continue
-
-        df = df.sort_index()
-        prev_close = df["close"].iloc[-2]
-        current_open = df["open"].iloc[-1]
-        current_close = df["close"].iloc[-1]
-
-        gap_pct = (current_open - prev_close) / prev_close * 100
-        abs_gap = abs(gap_pct)
-        volume = df["volume"].iloc[-1]
-        vol_avg = df["volume"].mean()
-        vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
-        one_day_perf = (current_close - prev_close) / prev_close * 100
-
-        # Snapshot für Score
-        df_ind = df.copy()
-        df_ind["ema9"] = ema(df_ind["close"], 9)
-        df_ind["ema20"] = ema(df_ind["close"], 20)
-        df_ind["ema50"] = ema(df_ind["close"], 50)
-        df_ind["rsi"] = rsi(df_ind["close"])
-        df_ind["atr"] = atr(df_ind)
-        df_ind.dropna(inplace=True)
-
-        score = 0
-        if not df_ind.empty:
-            latest = df_ind.iloc[-1]
-            vol_ratio_ind = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
-            snap = MarketSnapshot(sym, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio_ind, market_state)
-            score = calculate_trend_score(snap)
-
-        # News nur bei starken Kandidaten laden (Score ≥ 50 oder Gap > 3%)
-        news_sentiment = "N/A"
-        if score >= 50 or abs_gap > 3:
-            news = get_stock_news(sym, alpha_vantage_key, limit=3)
-            if news:
-                sentiments = [item.get("overall_sentiment_label", "Neutral") for item in news]
-                if "Bullish" in sentiments:
-                    news_sentiment = "Bullish"
-                elif "Bearish" in sentiments:
-                    news_sentiment = "Bearish"
-                else:
-                    news_sentiment = "Neutral"
-
-        enhanced_movers.append({
-            "Symbol": sym,
-            "Gap %": round(gap_pct, 2),
-            "Abs Gap": abs_gap,
-            "Vol Ratio": round(vol_ratio, 2),
-            "Score": score,
-            "Sentiment": news_sentiment,
-            "Last": round(current_close, 2)
-        })
-
-    if enhanced_movers:
-        df_movers = pd.DataFrame(enhanced_movers)
-        df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
-
-        # Empfehlung hinzufügen
-        def get_recommendation(row):
-            gap = row["Gap %"]
-            score = row["Score"]
-            sent = row["Sentiment"]
-            if score >= 70 and (sent == "Bullish" or gap > 3):
-                return "Kaufen / Long priorisieren"
-            elif score >= 50 or gap > 2:
-                return "Beobachten / Watchlist"
-            else:
-                return "Vermeiden"
-
-        df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
-
-        # Styling
-        def highlight(row):
-            rec = row["Empfehlung"]
-            if "Kaufen" in rec:
-                return ['background-color: #d4edda'] * len(row)
-            elif "Beobachten" in rec:
-                return ['background-color: #fff3cd'] * len(row)
-            else:
-                return ['background-color: #f8d7da'] * len(row)
-
-        styled = df_movers.style.apply(highlight, axis=1)
-
-        st.dataframe(styled, width='stretch', hide_index=True)
-
-        selected = st.selectbox("Zu Detail springen:", ["—"] + df_movers["Symbol"].tolist())
-        if selected != "—":
-            st.session_state.selected_ticker = selected
-            st.rerun()
-    else:
+    movers = scan_early_movers(daily_data)
+    if movers.empty:
         st.info("Keine Early Movers gefunden")
+    else:
+        st.dataframe(movers, width='stretch', hide_index=True)
+
+        # Symbol-Auswahl mit explizitem State-Update
+        selected_early = st.selectbox(
+            "Zu Detail springen:",
+            options=["—"] + movers["Symbol"].tolist(),
+            key="early_select"
+        )
+
+        if selected_early != "—" and selected_early != st.session_state.selected_ticker:
+            st.session_state.selected_ticker = selected_early
+            st.rerun()
 
 # ── S&P 500 Scanner ─────────────────────────────────────────────────────────────
 with tabs[1]:
-    st.subheader("🧠 S&P 500 Scanner – mit Empfehlung")
+    st.subheader("🧠 S&P 500 Scanner")
 
     rows = []
     for sym, df in daily_data.items():
@@ -251,47 +125,146 @@ with tabs[1]:
         latest = df_ind.iloc[-1]
         vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
 
-        snap = MarketSnapshot(sym, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio, market_state)
+        snap = MarketSnapshot(
+            symbol=sym,
+            price=float(latest["close"]),
+            rsi=float(latest["rsi"]),
+            ema9=float(latest["ema9"]),
+            ema20=float(latest["ema20"]),
+            ema50=float(latest["ema50"]),
+            atr=float(latest["atr"]),
+            volume_ratio=vol_ratio,
+            market_state=market_state
+        )
+
         score = calculate_trend_score(snap)
-        bias = get_option_bias(snap, score)
-
-        # Empfehlung
-        rec = "Vermeiden"
-        if score >= 70:
-            rec = "Kaufen / Long priorisieren"
-        elif score >= 50:
-            rec = "Beobachten / Watchlist"
-
-        rows.append({
-            "Symbol": sym,
-            "Score": score,
-            "Bias": bias,
-            "Empfehlung": rec
-        })
+        rows.append({"Symbol": sym, "Trend-Score": score})
 
     if rows:
-        df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
+        df_scores = pd.DataFrame(rows).sort_values("Trend-Score", ascending=False).reset_index(drop=True)
+        st.dataframe(df_scores, width='stretch', hide_index=True)
 
-        def highlight_scanner(row):
-            rec = row["Empfehlung"]
-            if "Kaufen" in rec:
-                return ['background-color: #d4edda'] * len(row)
-            elif "Beobachten" in rec:
-                return ['background-color: #fff3cd'] * len(row)
-            else:
-                return ['background-color: #f8d7da'] * len(row)
+        # Symbol-Auswahl für Scanner
+        selected_scanner = st.selectbox(
+            "Zu Detail springen (aus Scanner):",
+            options=["—"] + df_scores["Symbol"].head(20).tolist(),
+            key="scanner_select"
+        )
 
-        styled_scanner = df_scores.style.apply(highlight_scanner, axis=1)
-
-        st.dataframe(styled_scanner, width='stretch', hide_index=True)
+        if selected_scanner != "—" and selected_scanner != st.session_state.selected_ticker:
+            st.session_state.selected_ticker = selected_scanner
+            st.rerun()
     else:
         st.warning("Keine gültigen Scores berechnet")
 
-# Chart und Trading-Tab bleiben gleich (kopiere aus deiner aktuellen Datei, falls nötig)
+# ── Chart Analyse ───────────────────────────────────────────────────────────────
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
-    # ... dein aktueller Chart-Code ...
 
+    # Ticker-Auswahl mit aktueller State
+    available = list(daily_data.keys()) if daily_data else ["AAPL"]
+    ticker = st.selectbox(
+        "Ticker auswählen",
+        options=available,
+        index=available.index(st.session_state.selected_ticker) if st.session_state.selected_ticker in available else 0,
+        key="chart_select"
+    )
+
+    # State synchronisieren (wichtig!)
+    if ticker != st.session_state.selected_ticker:
+        st.session_state.selected_ticker = ticker
+        st.rerun()
+
+    if ticker in daily_data and not daily_data[ticker].empty:
+        df = daily_data[ticker].copy()
+
+        df["ema20"] = ema(df["close"], 20)
+        df["ema50"] = ema(df["close"], 50)
+        df["RSI"] = rsi(df["close"])
+        df["ATR"] = atr(df)
+
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.55, 0.15, 0.30])
+        fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"]), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df["volume"]), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+        fig.update_layout(height=800, title=f"{ticker} – Daily")
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.caption(f"Letzte Kerze: {df.index[-1]}")
+    else:
+        st.info("Keine Daten für diesen Ticker")
+
+# ── Trading-Entscheidung ────────────────────────────────────────────────────────
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
-    # ... dein aktueller Trading-Code mit News ...
+
+    ticker = st.session_state.selected_ticker
+    st.write(f"Ausgewählte Aktie: **{ticker}**")
+
+    if ticker in daily_data and len(daily_data[ticker]) >= 20:
+        df = daily_data[ticker].copy()
+        df_ind = df.copy()
+        df_ind["ema9"] = ema(df_ind["close"], 9)
+        df_ind["ema20"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
+        df_ind["rsi"] = rsi(df_ind["close"])
+        df_ind["atr"] = atr(df_ind)
+        df_ind.dropna(inplace=True)
+
+        if not df_ind.empty:
+            latest = df_ind.iloc[-1]
+            vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
+
+            snap = MarketSnapshot(
+                symbol=ticker,
+                price=float(latest["close"]),
+                rsi=float(latest["rsi"]),
+                ema9=float(latest["ema9"]),
+                ema20=float(latest["ema20"]),
+                ema50=float(latest["ema50"]),
+                atr=float(latest["atr"]),
+                volume_ratio=vol_ratio,
+                market_state=market_state
+            )
+
+            score = calculate_trend_score(snap)
+            bias = get_option_bias(snap, score)
+            plan = generate_trade_plan(snap, score)
+
+            if score >= 70:
+                st.success(f"🟢 Stark Bullish (Score {score})")
+            elif score >= 40:
+                st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
+            else:
+                st.error(f"🔴 Bearish / meiden (Score {score})")
+
+            st.markdown(f"**Option Bias:** {bias}")
+
+            if plan:
+                st.markdown("**Trade-Plan**")
+                st.json(plan)
+            else:
+                st.info("Kein valider Trade-Plan")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                ampel_d, reasons_d = decide_daytrade(snap)
+                st.markdown(f"**Daytrade:** {ampel_d}")
+                for r in reasons_d:
+                    st.write("• " + r)
+
+            with col2:
+                ampel_s, reasons_s = decide_swing(snap)
+                st.markdown(f"**Swing:** {ampel_s}")
+                for r in reasons_s:
+                    st.write("• " + r)
+
+        else:
+            st.warning("Keine Daten nach Berechnung")
+    else:
+        st.info("Wähle eine Aktie mit ausreichend Historie")
