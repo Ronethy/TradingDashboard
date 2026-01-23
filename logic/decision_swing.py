@@ -1,5 +1,8 @@
-def decide_swing(snapshot: MarketSnapshot) -> tuple[str, list[str]]:
-    reasons = []
+from logic.snapshot import MarketSnapshot
+from typing import Tuple, List
+
+def decide_swing(snapshot: MarketSnapshot) -> Tuple[str, List[str]]:
+    reasons: List[str] = []
 
     if snapshot.rsi > 80:
         reasons.append("RSI stark überkauft – Pullback möglich")
