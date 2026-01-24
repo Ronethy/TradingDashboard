@@ -38,9 +38,6 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
         return "Keine"
 
     # Tiefs finden
-    if recent_slice['low'].empty or prev_slice['low'].empty:
-        return "Keine (leere Slice)"
-
     recent_low_pos = recent_slice['low'].argmin()
     recent_low_price = recent_slice['low'].iloc[recent_low_pos]
     recent_low_rsi = recent_slice['rsi'].iloc[recent_low_pos]
