@@ -37,14 +37,24 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(recent_slice) < 2 or len(prev_slice) < 2:
         return "Keine"
 
-    # Tiefs finden
-    recent_low_idx = recent_slice['low'].idxmin()
-    recent_low_price = recent_slice['low'].min()
-    recent_low_rsi = recent_slice.iloc[recent_low_idx]['rsi']
+    # Tiefs finden – mit try-except für edge-cases (all NaN, empty)
+    try:
+        recent_low_pos = recent_slice['low'].argmin()
+        if pd.isna(recent_low_pos) or recent_low_pos < 0 or recent_low_pos >= len(recent_slice):
+            return "Keine (ungültige Position in recent low)"
+        recent_low_price = recent_slice['low'].iloc[recent_low_pos]
+        recent_low_rsi = recent_slice['rsi'].iloc[recent_low_pos]
+    except (ValueError, IndexError):
+        return "Keine (Fehler bei recent low – möglicherweise all NaN)"
 
-    prev_low_idx = prev_slice['low'].idxmin()
-    prev_low_price = prev_slice['low'].min()
-    prev_low_rsi = prev_slice.iloc[prev_low_idx]['rsi']
+    try:
+        prev_low_pos = prev_slice['low'].argmin()
+        if pd.isna(prev_low_pos) or prev_low_pos < 0 or prev_low_pos >= len(prev_slice):
+            return "Keine (ungültige Position in prev low)"
+        prev_low_price = prev_slice['low'].iloc[prev_low_pos]
+        prev_low_rsi = prev_slice['rsi'].iloc[prev_low_pos]
+    except (ValueError, IndexError):
+        return "Keine (Fehler bei prev low – möglicherweise all NaN)"
 
     if pd.isna(recent_low_rsi) or pd.isna(prev_low_rsi):
         return "Keine (NaN in RSI)"
