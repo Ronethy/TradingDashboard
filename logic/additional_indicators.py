@@ -9,7 +9,7 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(df) < lookback + rsi_period * 2:
         return "Keine (zu wenig Daten)"
 
-    # Kopie & Index vollständig resetten → RangeIndex (0, 1, 2, ...)
+    # Kopie machen & Index vollständig resetten (zu RangeIndex)
     df = df.copy().reset_index(drop=True)
 
     # RSI berechnen
@@ -30,15 +30,18 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(df) < lookback:
         return "Keine (nach NaN-Entfernung zu wenig Daten)"
 
-    # Slices bilden – Index ist jetzt integer
+    # Slices bilden (nach reset ist Index integer)
     recent_slice = df.iloc[-lookback:]
     prev_slice = df.iloc[-lookback*2:-lookback]
 
     if len(recent_slice) < 2 or len(prev_slice) < 2:
         return "Keine"
 
-    # Tiefs finden – idxmin() gibt Index relativ zum Slice zurück
-    recent_low_pos = recent_slice['low'].argmin()   # ← argmin() statt idxmin() → relative Position
+    # Tiefs finden
+    if recent_slice['low'].empty or prev_slice['low'].empty:
+        return "Keine (leere Slice)"
+
+    recent_low_pos = recent_slice['low'].argmin()
     recent_low_price = recent_slice['low'].iloc[recent_low_pos]
     recent_low_rsi = recent_slice['rsi'].iloc[recent_low_pos]
 
