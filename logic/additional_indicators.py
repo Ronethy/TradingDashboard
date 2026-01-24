@@ -9,7 +9,7 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(df) < lookback + rsi_period * 2:
         return "Keine (zu wenig Daten)"
 
-    # Kopie machen & Index vollständig resetten (alle Levels droppen)
+    # Kopie machen & Index vollständig resetten (zu RangeIndex)
     df = df.copy().reset_index(drop=True)
 
     # RSI berechnen
@@ -37,20 +37,14 @@ def rsi_divergence(df, rsi_period=14, lookback=30):
     if len(recent_slice) < 2 or len(prev_slice) < 2:
         return "Keine"
 
-    # Tiefs finden – mit NaN-Check für argmin
-    recent_low_pos = recent_slice['low'].argmin()
-    if pd.isna(recent_low_pos):
-        return "Keine (NaN in recent low)"
+    # Tiefs finden
+    recent_low_idx = recent_slice['low'].idxmin()
+    recent_low_price = recent_slice['low'].min()
+    recent_low_rsi = recent_slice.iloc[recent_low_idx]['rsi']
 
-    recent_low_price = recent_slice['low'].iloc[recent_low_pos]
-    recent_low_rsi = recent_slice['rsi'].iloc[recent_low_pos]
-
-    prev_low_pos = prev_slice['low'].argmin()
-    if pd.isna(prev_low_pos):
-        return "Keine (NaN in prev low)"
-
-    prev_low_price = prev_slice['low'].iloc[prev_low_pos]
-    prev_low_rsi = prev_slice['rsi'].iloc[prev_low_pos]
+    prev_low_idx = prev_slice['low'].idxmin()
+    prev_low_price = prev_slice['low'].min()
+    prev_low_rsi = prev_slice.iloc[prev_low_idx]['rsi']
 
     if pd.isna(recent_low_rsi) or pd.isna(prev_low_rsi):
         return "Keine (NaN in RSI)"
