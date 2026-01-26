@@ -8,7 +8,7 @@ import requests
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.timeframe import TimeFrame
 
 from data.sp500_symbols import SP500_SYMBOLS
 from logic.indicators import ema, rsi, atr
@@ -55,6 +55,7 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
+# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -64,31 +65,56 @@ if st.button("Daten aktualisieren (Cache leeren)"):
     st.rerun()
 
 @st.cache_data(ttl=60)
-def load_bars(ticker, _timeframe, start, end):
+def load_daily_data(symbols):
+    data = {}
+    batch_size = 80
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i + batch_size]
+        try:
+            req = StockBarsRequest(
+                symbol_or_symbols=batch,
+                timeframe=TimeFrame.Day,
+                start=now_ny - timedelta(days=150),
+                end=now_ny + timedelta(days=1),
+                feed="iex"
+            )
+            bars = client.get_stock_bars(req).df
+            for sym in batch:
+                try:
+                    df_sym = bars[bars.index.get_level_values('symbol') == sym].copy()
+                    if not df_sym.empty:
+                        data[sym] = df_sym
+                except:
+                    pass
+        except Exception as e:
+            st.caption(f"Batch-Fehler: {str(e)}")
+    return data
+
+@st.cache_data(ttl=60)
+def load_intraday(ticker):
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
-            timeframe=_timeframe,
-            start=start,
-            end=end,
+            timeframe=TimeFrame.Minute,
+            start=now_ny - timedelta(days=2),
+            end=now_ny + timedelta(minutes=30),
             feed="iex",
             limit=10000
         )
         bars = client.get_stock_bars(req).df
+
         if bars.empty:
             return pd.DataFrame()
+
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.reset_index(level=1, drop=True)
-        
-        # Index-Zeitzone sicher handhaben
-        if bars.index.tz is None:
-            bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
-        else:
-            bars.index = bars.index.tz_convert(ny_tz)
-        
+
+        bars.index = bars.index.tz_convert(ny_tz)
+
         return bars
+
     except Exception as e:
-        st.caption(f"Bars-Fehler {ticker}: {str(e)}")
+        st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -101,16 +127,12 @@ def get_stock_news(ticker, api_key, limit=3):
         if response.status_code == 200:
             data = response.json()
             return data.get("feed", [])[:limit]
-        return []
+        else:
+            return []
     except:
         return []
 
-# Daten laden – pro Symbol einzeln
-daily_data = {}
-for sym in SP500_SYMBOLS:
-    df = load_bars(sym, TimeFrame.Day, now_ny - timedelta(days=150), now_ny + timedelta(days=1))
-    if not df.empty:
-        daily_data[sym] = df
+daily_data = load_daily_data(SP500_SYMBOLS)
 
 st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
 
@@ -121,19 +143,25 @@ tabs = st.tabs([
     "🟢 Trading-Entscheidung"
 ])
 
+# ── Early Movers ────────────────────────────────────────────────────────────────
 with tabs[0]:
     st.subheader("🔥 Early Movers – mit Farben & News für Top-Kandidaten")
+
     enhanced_movers = []
     for sym, df in daily_data.items():
         if len(df) < 2:
             continue
+
         prev_close = df["close"].iloc[-2]
         current_open = df["open"].iloc[-1]
         gap_pct = (current_open - prev_close) / prev_close * 100
         abs_gap = abs(gap_pct)
+
         volume = df["volume"].iloc[-1]
         vol_avg = df["volume"].mean()
         vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
+
+        # Snapshot für Score
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
@@ -141,12 +169,14 @@ with tabs[0]:
         df_ind["rsi"] = rsi(df_ind["close"])
         df_ind["atr"] = atr(df_ind)
         df_ind.dropna(inplace=True)
+
         score = 0
         if not df_ind.empty:
             latest = df_ind.iloc[-1]
             vol_ratio_ind = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
             snap = MarketSnapshot(sym, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio_ind, market_state)
             score = calculate_trend_score(snap)
+
         enhanced_movers.append({
             "Symbol": sym,
             "Gap %": round(gap_pct, 2),
@@ -154,9 +184,12 @@ with tabs[0]:
             "Vol Ratio": round(vol_ratio, 2),
             "Score": score
         })
+
     if enhanced_movers:
         df_movers = pd.DataFrame(enhanced_movers)
         df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
+
+        # Empfehlung
         def get_recommendation(row):
             gap = row["Gap %"]
             score = row["Score"]
@@ -166,7 +199,10 @@ with tabs[0]:
                 return "Beobachten / Watchlist"
             else:
                 return "Vermeiden"
+
         df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
+
+        # Farbliche Hervorhebung
         def highlight_row(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -175,8 +211,12 @@ with tabs[0]:
                 return ['background-color: #fff3cd; color: black'] * len(row)
             else:
                 return ['background-color: #f8d7da; color: black'] * len(row)
+
         styled = df_movers.style.apply(highlight_row, axis=1)
+
         st.dataframe(styled, width='stretch', hide_index=True)
+
+        # News nur für Top 5 laden
         st.subheader("News zu Top Early Movers")
         top_symbols = df_movers.head(5)["Symbol"].tolist()
         for sym in top_symbols:
@@ -194,12 +234,15 @@ with tabs[0]:
     else:
         st.info("Keine Early Movers gefunden")
 
+# ── S&P 500 Scanner ─────────────────────────────────────────────────────────────
 with tabs[1]:
     st.subheader("🧠 S&P 500 Scanner – mit Farben & News für Top-Kandidaten")
+
     rows = []
     for sym, df in daily_data.items():
         if len(df) < 20:
             continue
+
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
@@ -207,10 +250,13 @@ with tabs[1]:
         df_ind["rsi"] = rsi(df_ind["close"])
         df_ind["atr"] = atr(df_ind)
         df_ind.dropna(inplace=True)
+
         if df_ind.empty:
             continue
+
         latest = df_ind.iloc[-1]
         vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
+
         snap = MarketSnapshot(
             symbol=sym,
             price=float(latest["close"]),
@@ -222,16 +268,26 @@ with tabs[1]:
             volume_ratio=vol_ratio,
             market_state=market_state
         )
+
         score = calculate_trend_score(snap)
         bias = get_option_bias(snap, score)
+
         rec = "Vermeiden"
         if score >= 70:
             rec = "Kaufen / Long priorisieren"
         elif score >= 50:
             rec = "Beobachten / Watchlist"
-        rows.append({"Symbol": sym, "Score": score, "Bias": bias, "Empfehlung": rec})
+
+        rows.append({
+            "Symbol": sym,
+            "Score": score,
+            "Bias": bias,
+            "Empfehlung": rec
+        })
+
     if rows:
         df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
+
         def highlight_scanner(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -240,8 +296,12 @@ with tabs[1]:
                 return ['background-color: #fff3cd; color: black'] * len(row)
             else:
                 return ['background-color: #f8d7da; color: black'] * len(row)
+
         styled_scanner = df_scores.style.apply(highlight_scanner, axis=1)
+
         st.dataframe(styled_scanner, width='stretch', hide_index=True)
+
+        # News nur für Top 5 laden
         st.subheader("News zu Top S&P 500 Kandidaten")
         top_symbols_scanner = df_scores.head(5)["Symbol"].tolist()
         for sym in top_symbols_scanner:
@@ -259,89 +319,78 @@ with tabs[1]:
     else:
         st.warning("Keine gültigen Scores berechnet")
 
+# ── Chart Analyse ───────────────────────────────────────────────────────────────
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
 
-    timeframe_options = {
-        "Minute": TimeFrame.Minute,
-        "5 Minuten": TimeFrame(5, TimeFrameUnit.Minute),
-        "Day": TimeFrame.Day,
-        "Week": TimeFrame.Week
-    }
-
-    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=2)
-    timeframe = timeframe_options[timeframe_str]
-
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        start = now_ny - timedelta(days=150) if timeframe == TimeFrame.Day else now_ny - timedelta(days=365) if timeframe == TimeFrame.Week else now_ny - timedelta(days=5)
-        df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
-        if df.empty:
-            st.info("Keine Daten für diesen Timeframe")
-        else:
-            df["ema20"] = ema(df["close"], 20)
-            df["ema50"] = ema(df["close"], 50)
-            df["RSI"] = rsi(df["close"])
-            df["ATR"] = atr(df)
+        df = daily_data[ticker].copy()
 
-            # MACD berechnen
-            ema_fast = df['close'].ewm(span=12, adjust=False).mean()
-            ema_slow = df['close'].ewm(span=26, adjust=False).mean()
-            macd_line = ema_fast - ema_slow
-            signal_line = macd_line.ewm(span=9, adjust=False).mean()
-            histogram = macd_line - signal_line
+        df["ema20"] = ema(df["close"], 20)
+        df["ema50"] = ema(df["close"], 50)
+        df["RSI"] = rsi(df["close"])
+        df["ATR"] = atr(df)
 
-            # Divergenz-Punkte finden
-            div = rsi_divergence(df)
-            low_points = []
-            if "Bullish" in div or "Bearish" in div:
-                recent_low_idx = df['low'].argmin()
-                prev_low_idx = df['low'][:-lookback].argmin() if len(df) > lookback else None
-                low_points = [recent_low_idx] if recent_low_idx is not None else []
-                if prev_low_idx is not None:
-                    low_points.append(prev_low_idx)
+        # MACD berechnen
+        ema_fast = df['close'].ewm(span=12, adjust=False).mean()
+        ema_slow = df['close'].ewm(span=26, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        histogram = macd_line - signal_line
 
-            fig = make_subplots(
-                rows=4, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.05,
-                row_heights=[0.5, 0.15, 0.15, 0.2]
+        # Divergenz-Punkte finden
+        div = rsi_divergence(df)
+        low_points = []
+        if "Bullish" in div or "Bearish" in div:
+            recent_low_idx = df['low'].argmin()
+            prev_low_idx = df['low'][:-30].argmin() if len(df) > 30 else None
+            low_points = [recent_low_idx] if recent_low_idx is not None else []
+            if prev_low_idx is not None:
+                low_points.append(prev_low_idx)
+
+        fig = make_subplots(
+            rows=4, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            row_heights=[0.5, 0.15, 0.15, 0.2]
+        )
+
+        fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+
+        fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
+
+        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+        fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
+
+        for idx in low_points:
+            fig.add_annotation(
+                x=df.index[idx],
+                y=df['low'].iloc[idx],
+                text="Low",
+                showarrow=True,
+                arrowhead=1,
+                arrowsize=1,
+                arrowwidth=2,
+                arrowcolor="red" if "Bearish" in div else "green",
+                row=1, col=1
             )
 
-            fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+        fig.update_layout(height=900, title=f"{ticker} – Daily", hovermode="x unified")
+        st.plotly_chart(fig, use_container_width=True)
 
-            fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
-
-            fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-
-            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
-
-            for idx in low_points:
-                fig.add_annotation(
-                    x=df.index[idx],
-                    y=df['low'].iloc[idx],
-                    text="Low",
-                    showarrow=True,
-                    arrowhead=1,
-                    arrowsize=1,
-                    arrowwidth=2,
-                    arrowcolor="red" if "Bearish" in div else "green",
-                    row=1, col=1
-                )
-
-            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
+        st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
         st.info("Keine Daten für diesen Ticker")
 
+# ── Trading-Entscheidung ────────────────────────────────────────────────────────
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
 
@@ -419,7 +468,7 @@ with tabs[3]:
                     else:
                         st.info(macd["Interpretation"])
                 else:
-                    st.info(macd["Interpretation"])
+                    st.info(macd["text"])
 
             col1, col2 = st.columns(2)
             with col1:
