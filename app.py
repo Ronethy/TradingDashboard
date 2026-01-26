@@ -79,7 +79,13 @@ def load_bars(ticker, _timeframe, start, end):
             return pd.DataFrame()
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.reset_index(level=1, drop=True)
-        bars.index = bars.index.tz_convert(ny_tz)
+        
+        # Index-Zeitzone sicher handhaben
+        if bars.index.tz is None:
+            bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
+        else:
+            bars.index = bars.index.tz_convert(ny_tz)
+        
         return bars
     except Exception as e:
         st.caption(f"Bars-Fehler {ticker}: {str(e)}")
