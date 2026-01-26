@@ -8,7 +8,7 @@ import requests
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from data.sp500_symbols import SP500_SYMBOLS
 from logic.indicators import ema, rsi, atr
@@ -20,7 +20,7 @@ from logic.decision_daytrade import decide_daytrade
 from logic.decision_swing import decide_swing
 from logic.premarket_scanner import scan_early_movers
 from logic.decision_base import score_to_ampel
-from logic.additional_indicators import rsi_divergence, macd_info # ← neu hinzugefügt
+from logic.additional_indicators import rsi_divergence, macd_info
 
 st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
@@ -55,7 +55,6 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
-# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -91,13 +90,13 @@ def load_daily_data(symbols):
     return data
 
 @st.cache_data(ttl=60)
-def load_intraday(ticker):
+def load_bars(ticker, timeframe, start, end):
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Minute,
-            start=now_ny - timedelta(days=2),
-            end=now_ny + timedelta(minutes=30),
+            timeframe=timeframe,
+            start=start,
+            end=end,
             feed="iex",
             limit=10000
         )
@@ -109,7 +108,7 @@ def load_intraday(ticker):
         bars.index = bars.index.tz_convert(ny_tz)
         return bars
     except Exception as e:
-        st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
+        st.caption(f"Bars-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -318,28 +317,89 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("📈 Chart Analyse")
 
+    timeframe_options = {
+        "15 Minuten": TimeFrame(15, TimeFrameUnit.Minute),
+        "Täglich": TimeFrame.Day,
+        "Wöchentlich": TimeFrame.Week
+    }
+
+    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)  # Default Täglich
+    timeframe = timeframe_options[timeframe_str]
+
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        df = daily_data[ticker].copy()
+        # Dynamische Startzeit je nach Zeitrahmen
+        if timeframe_str == "15 Minuten":
+            start = now_ny - timedelta(days=7)   # 1 Woche für 15-Min-Chart
+        elif timeframe_str == "Täglich":
+            start = now_ny - timedelta(days=365)  # 1 Jahr
+        else:  # Wöchentlich
+            start = now_ny - timedelta(days=365*2)  # 2 Jahre
 
-        df["ema20"] = ema(df["close"], 20)
-        df["ema50"] = ema(df["close"], 50)
-        df["RSI"] = rsi(df["close"])
-        df["ATR"] = atr(df)
+        df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+        if df.empty:
+            st.info("Keine Daten für diesen Zeitrahmen")
+        else:
+            df["ema20"] = ema(df["close"], 20)
+            df["ema50"] = ema(df["close"], 50)
+            df["RSI"] = rsi(df["close"])
+            df["ATR"] = atr(df)
 
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.55, 0.15, 0.30])
-        fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA 20", line=dict(color="#00BFFF")), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA 50", line=dict(color="#FF8C00")), row=1, col=1)
-        fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+            # MACD berechnen
+            ema_fast = df['close'].ewm(span=12, adjust=False).mean()
+            ema_slow = df['close'].ewm(span=26, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            histogram = macd_line - signal_line
 
-        fig.update_layout(height=800, title=f"{ticker} – Daily", hovermode="x unified")
-        st.plotly_chart(fig, use_container_width=True)
+            # Divergenz-Punkte finden
+            div = rsi_divergence(df)
+            low_points = []
+            if "Bullish" in div or "Bearish" in div:
+                recent_low_idx = df['low'].argmin()
+                prev_low_idx = df['low'][:-30].argmin() if len(df) > 30 else None
+                low_points = [recent_low_idx] if recent_low_idx is not None else []
+                if prev_low_idx is not None:
+                    low_points.append(prev_low_idx)
 
-        st.caption(f"Letzte Kerze: {df.index[-1]}")
+            fig = make_subplots(
+                rows=4, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                row_heights=[0.5, 0.15, 0.15, 0.2]
+            )
+
+            fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+
+            fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
+
+            fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
+            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
+
+            for idx in low_points:
+                fig.add_annotation(
+                    x=df.index[idx],
+                    y=df['low'].iloc[idx],
+                    text="Low",
+                    showarrow=True,
+                    arrowhead=1,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor="red" if "Bearish" in div else "green",
+                    row=1, col=1
+                )
+
+            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
         st.info("Keine Daten für diesen Ticker")
 
@@ -380,7 +440,6 @@ with tabs[3]:
             bias = get_option_bias(snap, score)
             plan = generate_trade_plan(snap, score)
 
-            # Ampel-Logik visuell
             if score >= 70:
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
@@ -396,7 +455,6 @@ with tabs[3]:
             else:
                 st.info("Kein valider Trade-Plan")
 
-            # Zusatz-Indikatoren (neu)
             st.subheader("Zusatz-Indikatoren")
             col_div, col_macd = st.columns(2)
 
@@ -438,7 +496,6 @@ with tabs[3]:
                 for r in reasons_s:
                     st.write("• " + r)
 
-            # News für ausgewähltes Symbol laden
             st.subheader("News zu dieser Aktie")
             news = get_stock_news(ticker, alpha_vantage_key, limit=3)
             if news:
