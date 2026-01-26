@@ -55,7 +55,6 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
-# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -105,13 +104,11 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex oder Symbol-Level komplett entfernen
+        # MultiIndex bereinigen – Symbol-Level komplett entfernen
         if isinstance(bars.index, pd.MultiIndex):
             # Level 0 = Timestamp, Level 1 = Symbol → nur Timestamp behalten
             bars = bars.reset_index(level=1, drop=True)
-        elif bars.index.name == 'symbol' or 'symbol' in bars.columns:
-            # Falls Symbol im Index oder als Spalte
-            bars = bars.reset_index(drop=True)
+            bars.index.name = 'timestamp'  # Klarheit
 
         # Index zurücksetzen und Timestamp-Spalte verwenden (falls nötig)
         if 'timestamp' in bars.columns:
