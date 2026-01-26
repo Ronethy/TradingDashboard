@@ -355,31 +355,40 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
+        # Maximaler Rückblick: 6 Monate, aber bei 15 Min stark begrenzen
+        max_lookback_days = 180  # 6 Monate
         if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
+            lookback_days = 7  # IEX liefert zuverlässig nur ~1 Woche für Intraday
+            st.info("15-Min-Chart: Begrenzt auf die letzten 7 Tage (IEX-Limit). Für längere Historie Täglich oder Wöchentlich wählen.")
         elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=730)  # 2 Jahre
-        else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*5)  # 5 Jahre
+            lookback_days = max_lookback_days
+        else:
+            lookback_days = max_lookback_days * 2  # Wöchentlich braucht mehr
+
+        start = now_ny - timedelta(days=lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
         if df.empty:
-            st.warning("Keine Daten für diesen Zeitrahmen")
+            st.warning(
+                f"Keine Daten geladen für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                "IEX hat oft Lücken bei Intraday. Versuche 'Täglich' oder kürzeren Zeitraum."
+            )
         else:
+            # Indikatoren berechnen (wie bisher)
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
             df["ATR"] = atr(df)
 
-            # MACD berechnen
+            # MACD
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema_fast - ema_slow
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
-            # Divergenz-Punkte finden
+            # Divergenz
             div = rsi_divergence(df)
             low_points = []
             if "Bullish" in div or "Bearish" in div:
@@ -426,7 +435,7 @@ with tabs[2]:
             fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
