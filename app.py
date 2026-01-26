@@ -108,16 +108,16 @@ def load_bars(ticker, _timeframe, start, end):
             feed="iex",
             limit=10000
         )
-        bars = client.get_stock_bars(req).df
-        if bars.empty:
-            return pd.DataFrame()
-        if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.reset_index(level=1, drop=True)
-        bars.index = bars.index.tz_convert(ny_tz)
-        return bars
-    except Exception as e:
-        st.caption(f"Bars-Fehler {ticker}: {str(e)}")
-        return pd.DataFrame()
+# Daten laden – pro Symbol einzeln, um UnhashableParamError zu vermeiden
+daily_data = {}  # Explizit als leeres Dict definieren
+try:
+    for sym in SP500_SYMBOLS:
+        df = load_bars(sym, TimeFrame.Day, now_ny - timedelta(days=150), now_ny + timedelta(days=1))
+        if not df.empty:
+            daily_data[sym] = df
+except Exception as e:
+    st.error(f"Fehler beim Laden der Daten: {str(e)}")
+    daily_data = {}  # Fallback
 
 st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
 
