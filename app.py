@@ -55,6 +55,7 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
+# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -90,11 +91,11 @@ def load_daily_data(symbols):
     return data
 
 @st.cache_data(ttl=60)
-def load_bars(ticker, timeframe, start, end):
+def load_bars(ticker, _timeframe, start, end):
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
-            timeframe=timeframe,
+            timeframe=_timeframe,
             start=start,
             end=end,
             feed="iex",
@@ -328,13 +329,13 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen
+        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
         if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=7)   # 1 Woche für 15-Min-Chart
+            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
         elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=365)  # 1 Jahr
+            start = now_ny - timedelta(days=730)  # 2 Jahre
         else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*2)  # 2 Jahre
+            start = now_ny - timedelta(days=365*5)  # 5 Jahre
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
         if df.empty:
@@ -399,7 +400,7 @@ with tabs[2]:
             fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
+            st.caption(f"Letzte Kerze: {df.index[-1]} – Daten ab {df.index[0].strftime('%Y-%m-%d')}")
     else:
         st.info("Keine Daten für diesen Ticker")
 
