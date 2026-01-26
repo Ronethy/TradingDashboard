@@ -20,7 +20,7 @@ from logic.decision_daytrade import decide_daytrade
 from logic.decision_swing import decide_swing
 from logic.premarket_scanner import scan_early_movers
 from logic.decision_base import score_to_ampel
-from logic.additional_indicators import rsi_divergence, macd_info
+from logic.additional_indicators import rsi_divergence, macd_info # ← neu hinzugefügt
 
 st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
@@ -102,17 +102,12 @@ def load_intraday(ticker):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
-
         if bars.empty:
             return pd.DataFrame()
-
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.reset_index(level=1, drop=True)
-
         bars.index = bars.index.tz_convert(ny_tz)
-
         return bars
-
     except Exception as e:
         st.caption(f"Intraday-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
@@ -332,58 +327,16 @@ with tabs[2]:
         df["RSI"] = rsi(df["close"])
         df["ATR"] = atr(df)
 
-        # MACD berechnen
-        ema_fast = df['close'].ewm(span=12, adjust=False).mean()
-        ema_slow = df['close'].ewm(span=26, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        histogram = macd_line - signal_line
-
-        # Divergenz-Punkte finden
-        div = rsi_divergence(df)
-        low_points = []
-        if "Bullish" in div or "Bearish" in div:
-            recent_low_idx = df['low'].argmin()
-            prev_low_idx = df['low'][:-30].argmin() if len(df) > 30 else None
-            low_points = [recent_low_idx] if recent_low_idx is not None else []
-            if prev_low_idx is not None:
-                low_points.append(prev_low_idx)
-
-        fig = make_subplots(
-            rows=4, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.05,
-            row_heights=[0.5, 0.15, 0.15, 0.2]
-        )
-
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06, row_heights=[0.55, 0.15, 0.30])
         fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
-
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA 20", line=dict(color="#00BFFF")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA 50", line=dict(color="#FF8C00")), row=1, col=1)
         fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
-
         fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
         fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
         fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
 
-        fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
-        fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
-
-        for idx in low_points:
-            fig.add_annotation(
-                x=df.index[idx],
-                y=df['low'].iloc[idx],
-                text="Low",
-                showarrow=True,
-                arrowhead=1,
-                arrowsize=1,
-                arrowwidth=2,
-                arrowcolor="red" if "Bearish" in div else "green",
-                row=1, col=1
-            )
-
-        fig.update_layout(height=900, title=f"{ticker} – Daily", hovermode="x unified")
+        fig.update_layout(height=800, title=f"{ticker} – Daily", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
         st.caption(f"Letzte Kerze: {df.index[-1]}")
@@ -427,6 +380,7 @@ with tabs[3]:
             bias = get_option_bias(snap, score)
             plan = generate_trade_plan(snap, score)
 
+            # Ampel-Logik visuell
             if score >= 70:
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
@@ -442,6 +396,7 @@ with tabs[3]:
             else:
                 st.info("Kein valider Trade-Plan")
 
+            # Zusatz-Indikatoren (neu)
             st.subheader("Zusatz-Indikatoren")
             col_div, col_macd = st.columns(2)
 
@@ -483,6 +438,7 @@ with tabs[3]:
                 for r in reasons_s:
                     st.write("• " + r)
 
+            # News für ausgewähltes Symbol laden
             st.subheader("News zu dieser Aktie")
             news = get_stock_news(ticker, alpha_vantage_key, limit=3)
             if news:
