@@ -92,10 +92,6 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    if df.empty:
-    st.warning(f"Keine Daten geladen für {ticker} im Zeitrahmen '{timeframe_str}' ab {start.date()}.")
-    else:
-    st.success(f"Daten geladen: {len(df)} Kerzen von {df.index.min().date()} bis {df.index.max().date()}")
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
