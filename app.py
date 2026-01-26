@@ -102,7 +102,7 @@ def load_bars(ticker, _timeframe, start, end):
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
-            timeframe=_timeframe,
+            timeframe=_timeframe,  # ← Unterstrich-Variable
             start=start,
             end=end,
             feed="iex",
@@ -118,13 +118,6 @@ def load_bars(ticker, _timeframe, start, end):
     except Exception as e:
         st.caption(f"Bars-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
-
-# Daten laden – pro Symbol einzeln
-daily_data = {}
-for sym in SP500_SYMBOLS:
-    df = load_bars(sym, TimeFrame.Day, now_ny - timedelta(days=150), now_ny + timedelta(days=1))
-    if not df.empty:
-        daily_data[sym] = df
 
 st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
 
