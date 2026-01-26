@@ -59,6 +59,17 @@ if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
 
+# Zeitrahmen-Auswahl für Chart
+timeframe_options = {
+    "Minute": TimeFrame.Minute,
+    "5 Minuten": TimeFrame(5, TimeFrameUnit.Minute),
+    "Day": TimeFrame.Day,
+    "Week": TimeFrame.Week
+}
+
+timeframe_str = st.selectbox("Zeitrahmen für Chart", list(timeframe_options.keys()), index=2)  # Default Day
+timeframe = timeframe_options[timeframe_str]
+
 if st.button("Daten aktualisieren (Cache leeren)"):
     st.cache_data.clear()
     st.rerun()
@@ -99,7 +110,12 @@ def get_stock_news(ticker, api_key, limit=3):
     except:
         return []
 
-daily_data = load_bars(SP500_SYMBOLS, TimeFrame.Day, now_ny - timedelta(days=150), now_ny + timedelta(days=1))
+# Daten laden – pro Symbol einzeln, um UnhashableError zu vermeiden
+daily_data = {}
+for sym in SP500_SYMBOLS:
+    df = load_bars(sym, TimeFrame.Day, now_ny - timedelta(days=150), now_ny + timedelta(days=1))
+    if not df.empty:
+        daily_data[sym] = df
 
 st.caption(f"Geladene Symbole: {len(daily_data)} / {len(SP500_SYMBOLS)}")
 
@@ -200,7 +216,17 @@ with tabs[1]:
             continue
         latest = df_ind.iloc[-1]
         vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
-        snap = MarketSnapshot(sym, latest["close"], latest["rsi"], latest["ema9"], latest["ema20"], latest["ema50"], latest["atr"], vol_ratio, market_state)
+        snap = MarketSnapshot(
+            symbol=sym,
+            price=float(latest["close"]),
+            rsi=float(latest["rsi"]),
+            ema9=float(latest["ema9"]),
+            ema20=float(latest["ema20"]),
+            ema50=float(latest["ema50"]),
+            atr=float(latest["atr"]),
+            volume_ratio=vol_ratio,
+            market_state=market_state
+        )
         score = calculate_trend_score(snap)
         bias = get_option_bias(snap, score)
         rec = "Vermeiden"
