@@ -55,7 +55,6 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
-# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -106,7 +105,13 @@ def load_bars(ticker, _timeframe, start, end):
             return pd.DataFrame()
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.reset_index(level=1, drop=True)
-        bars.index = bars.index.tz_convert(ny_tz)
+        
+        # Zeitzonen-Handling sicher machen
+        if bars.index.tz is None:
+            bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
+        else:
+            bars.index = bars.index.tz_convert(ny_tz)
+        
         return bars
     except Exception as e:
         st.caption(f"Bars-Fehler {ticker}: {str(e)}")
