@@ -105,11 +105,17 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex bereinigen – Symbol-Level komplett entfernen
+        # MultiIndex oder Symbol-Level komplett entfernen
         if isinstance(bars.index, pd.MultiIndex):
             # Level 0 = Timestamp, Level 1 = Symbol → nur Timestamp behalten
             bars = bars.reset_index(level=1, drop=True)
-            bars.index.name = 'timestamp'  # Klarheit
+        elif bars.index.name == 'symbol' or 'symbol' in bars.columns:
+            # Falls Symbol im Index oder als Spalte
+            bars = bars.reset_index(drop=True)
+
+        # Index zurücksetzen und Timestamp-Spalte verwenden (falls nötig)
+        if 'timestamp' in bars.columns:
+            bars = bars.set_index('timestamp')
 
         # Sicherstellen, dass Index DatetimeIndex ist
         if not isinstance(bars.index, pd.DatetimeIndex):
