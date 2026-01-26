@@ -329,17 +329,24 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
+        # Maximal 6 Monate zurück – wie gewünscht
+        max_lookback = timedelta(days=180)  # ~6 Monate
+
         if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
-        elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=730)  # 2 Jahre
-        else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*5)  # 5 Jahre
+            # IEX liefert Intraday meist nur ~30 Tage → begrenzen
+            start = max(now_ny - timedelta(days=30), now_ny - max_lookback)
+            st.info("15-Min-Chart: Begrenzt auf max. 30 Tage (IEX-Limit). Für längere Historie Täglich/Wöchentlich wählen.")
+        else:
+            start = now_ny - max_lookback
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
         if df.empty:
-            st.info("Keine Daten für diesen Zeitrahmen")
+            st.warning(
+                f"Keine oder sehr wenige Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                "Der kostenlose IEX-Feed hat Lücken bei Intraday-Daten. "
+                "Versuche einen kürzeren Zeitraum oder wechsle zu 'Täglich'."
+            )
         else:
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
@@ -400,7 +407,7 @@ with tabs[2]:
             fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Letzte Kerze: {df.index[-1]} – Daten ab {df.index[0].strftime('%Y-%m-%d')}")
+            st.caption(f"Daten ab {df.index[0].strftime('%Y-%m-%d')} bis {df.index[-1].strftime('%Y-%m-%d')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
