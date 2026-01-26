@@ -92,6 +92,10 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
+    if df.empty:
+    st.warning(f"Keine Daten geladen für {ticker} im Zeitrahmen '{timeframe_str}' ab {start.date()}.")
+    else:
+    st.success(f"Daten geladen: {len(df)} Kerzen von {df.index.min().date()} bis {df.index.max().date()}")
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -104,15 +108,23 @@ def load_bars(ticker, _timeframe, start, end):
         bars = client.get_stock_bars(req).df
         if bars.empty:
             return pd.DataFrame()
+
+        # MultiIndex entfernen, falls vorhanden
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.reset_index(level=1, drop=True)
-        
-        # Zeitzonen-Handling sicher machen
+
+        # Sicherstellen, dass Index DatetimeIndex ist
+        if not isinstance(bars.index, pd.DatetimeIndex):
+            bars.index = pd.to_datetime(bars.index)
+
+        # Zeitzone nur setzen/konvertieren, wenn nötig
         if bars.index.tz is None:
+            # Naive → als UTC annehmen und nach NY konvertieren
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
+            # Bereits tz-aware → nur konvertieren
             bars.index = bars.index.tz_convert(ny_tz)
-        
+
         return bars
     except Exception as e:
         st.caption(f"Bars-Fehler {ticker}: {str(e)}")
