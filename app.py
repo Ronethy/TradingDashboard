@@ -104,21 +104,30 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex bereinigen – Symbol-Level komplett entfernen
+        # 1. MultiIndex bereinigen – Symbol-Level explizit droppen
         if isinstance(bars.index, pd.MultiIndex):
-            # Level 0 = Timestamp, Level 1 = Symbol → nur Timestamp behalten
+            # Level 0 = Timestamp, Level 1 = Symbol
             bars = bars.reset_index(level=1, drop=True)
-            bars.index.name = 'timestamp'  # Klarheit
 
-        # Index zurücksetzen und Timestamp-Spalte verwenden (falls nötig)
-        if 'timestamp' in bars.columns:
-            bars = bars.set_index('timestamp')
+        # 2. Falls Symbol als Spalte oder Index-Wert übrig ist → entfernen
+        if 'symbol' in bars.columns:
+            bars = bars.drop(columns=['symbol'])
 
-        # Sicherstellen, dass Index DatetimeIndex ist
+        # 3. Index zurücksetzen, falls nötig
+        bars = bars.reset_index(drop=False)
+
+        # 4. Timestamp-Spalte als Index setzen (meist heißt sie 'timestamp' oder 'index')
+        timestamp_col = 'timestamp' if 'timestamp' in bars.columns else bars.columns[0]
+        bars = bars.set_index(timestamp_col)
+
+        # 5. Sicherstellen, dass Index DatetimeIndex ist
         if not isinstance(bars.index, pd.DatetimeIndex):
-            bars.index = pd.to_datetime(bars.index)
+            bars.index = pd.to_datetime(bars.index, errors='coerce')
 
-        # Zeitzone setzen/konvertieren
+        # 6. Ungültige Zeilen entfernen (falls Parsing-Fehler)
+        bars = bars[bars.index.notnull()]
+
+        # 7. Zeitzone setzen/konvertieren
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
