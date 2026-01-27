@@ -144,46 +144,34 @@ def load_bars(ticker, _timeframe, start, end):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
-        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen, Index-Typ={type(bars.index).__name__}, roher Index-Beispiel={bars.index[:3] if not bars.empty else 'leer'}")
+        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen, Index-Typ={type(bars.index).__name__}, Levels={bars.index.names if isinstance(bars.index, pd.MultiIndex) else 'kein MultiIndex'}")
 
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex bereinigen
+        # MultiIndex korrekt handhaben
         if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.xs(ticker, level=1, drop_level=True) if ticker in bars.index.levels[1] else bars.reset_index(level=1, drop=True)
+            # Level 0 = symbol, Level 1 = timestamp
+            if 'timestamp' in bars.index.names:
+                bars = bars.reset_index(level='timestamp')  # Timestamp als Spalte holen, Symbol-Level droppen
+            else:
+                bars = bars.reset_index(level=1, drop=True)  # Fallback: Level 1 droppen
 
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
 
-        bars = bars.reset_index(drop=False)
+        # Timestamp als Index setzen (falls als Spalte vorhanden)
+        if 'timestamp' in bars.columns:
+            bars = bars.set_index('timestamp')
+            st.caption("Debug: 'timestamp' als Index gesetzt")
+        else:
+            # Fallback: Index als Timestamp annehmen
+            bars.index = pd.to_datetime(bars.index, errors='coerce')
+            st.caption("Debug: Index direkt als Timestamp geparst")
 
-        # Timestamp-Spalte finden – sehr flexibel
-        possible_timestamp_cols = [col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower() or 'index' in col.lower() or col == 0]
-        timestamp_col = possible_timestamp_cols[0] if possible_timestamp_cols else bars.columns[0]
-
-        st.caption(f"Debug Timestamp-Spalte gefunden: {timestamp_col}")
-
-        bars = bars.set_index(timestamp_col)
-
-        # Unix-Timestamp parsen – mit mehreren Versuchen
+        # DatetimeIndex sicherstellen
         if not isinstance(bars.index, pd.DatetimeIndex):
-            raw_values = bars.index.tolist()
-            st.caption(f"Debug rohe Index-Werte (erste 3): {raw_values[:3]}")
-
-            # Versuch 1: Unix Millisekunden
-            try:
-                bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
-                st.caption("Debug: Parsing als ms erfolgreich")
-            except:
-                # Versuch 2: Unix Sekunden
-                try:
-                    bars.index = pd.to_datetime(bars.index, unit='s', utc=True, errors='coerce')
-                    st.caption("Debug: Parsing als s erfolgreich")
-                except:
-                    # Versuch 3: String-Parsing
-                    bars.index = pd.to_datetime(bars.index, errors='coerce')
-                    st.caption("Debug: String-Parsing versucht")
+            bars.index = pd.to_datetime(bars.index, errors='coerce')
 
         bars = bars[bars.index.notnull()]
 
