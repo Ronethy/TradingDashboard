@@ -118,7 +118,7 @@ def load_bars(ticker, _timeframe, start, end):
                 prepost=False,
                 progress=False
             )
-            st.caption(f"Debug yfinance: {len(df)} Kerzen geladen, Index-Typ={type(df.index).__name__}")
+            st.caption(f"Debug yfinance: {len(df)} Kerzen geladen, Index-Typ={type(df.index).__name__}, erstes Datum={df.index.min() if not df.empty else 'leer'}")
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -144,7 +144,8 @@ def load_bars(ticker, _timeframe, start, end):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
-        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen")
+        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen, Index-Typ={type(bars.index).__name__}, roher Index-Beispiel={bars.index[:3] if not bars.empty else 'leer'}")
+
         if bars.empty:
             return pd.DataFrame()
 
@@ -157,15 +158,32 @@ def load_bars(ticker, _timeframe, start, end):
 
         bars = bars.reset_index(drop=False)
 
-        # Timestamp-Spalte finden – flexibel suchen
-        possible_timestamp_cols = [col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower() or 'index' in col.lower()]
+        # Timestamp-Spalte finden – sehr flexibel
+        possible_timestamp_cols = [col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower() or 'index' in col.lower() or col == 0]
         timestamp_col = possible_timestamp_cols[0] if possible_timestamp_cols else bars.columns[0]
+
+        st.caption(f"Debug Timestamp-Spalte gefunden: {timestamp_col}")
 
         bars = bars.set_index(timestamp_col)
 
-        # Unix-Timestamp parsen – explizit ms annehmen (Alpaca Standard)
+        # Unix-Timestamp parsen – mit mehreren Versuchen
         if not isinstance(bars.index, pd.DatetimeIndex):
-            bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
+            raw_values = bars.index.tolist()
+            st.caption(f"Debug rohe Index-Werte (erste 3): {raw_values[:3]}")
+
+            # Versuch 1: Unix Millisekunden
+            try:
+                bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
+                st.caption("Debug: Parsing als ms erfolgreich")
+            except:
+                # Versuch 2: Unix Sekunden
+                try:
+                    bars.index = pd.to_datetime(bars.index, unit='s', utc=True, errors='coerce')
+                    st.caption("Debug: Parsing als s erfolgreich")
+                except:
+                    # Versuch 3: String-Parsing
+                    bars.index = pd.to_datetime(bars.index, errors='coerce')
+                    st.caption("Debug: String-Parsing versucht")
 
         bars = bars[bars.index.notnull()]
 
@@ -175,7 +193,7 @@ def load_bars(ticker, _timeframe, start, end):
             bars.index = bars.index.tz_convert(ny_tz)
 
         bars = bars.sort_index()
-        st.caption(f"Debug nach Parsing: {len(bars)} Kerzen, erstes Datum: {bars.index.min()}")
+        st.caption(f"Debug nach Parsing: {len(bars)} Kerzen, erstes Datum: {bars.index.min() if not bars.empty else 'NaT'}")
         return bars
     except Exception as e:
         st.caption(f"Debug Alpaca-Exception: {str(e)}")
