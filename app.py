@@ -104,11 +104,8 @@ def load_bars(ticker, _timeframe, start, end):
     max_start = now_ny - timedelta(days=180)
     start = max(start, max_start)
 
-    st.caption(f"Debug load_bars: timeframe={_timeframe}, start={start.date()}, yfinance_available={YFINANCE_AVAILABLE}")
-
     # yfinance für 15-Minuten (längere Historie)
     if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
-        st.caption("Debug: yfinance-Block aufgerufen")
         try:
             df = yf.download(
                 ticker,
@@ -118,7 +115,6 @@ def load_bars(ticker, _timeframe, start, end):
                 prepost=False,
                 progress=False
             )
-            st.caption(f"Debug yfinance: {len(df)} Kerzen geladen, Index-Typ={type(df.index).__name__}, erstes Datum={df.index.min() if not df.empty else 'leer'}")
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -128,10 +124,8 @@ def load_bars(ticker, _timeframe, start, end):
                     df.index = df.index.tz_convert(ny_tz)
                 df = df.sort_index()
                 return df
-            else:
-                st.caption("Debug yfinance: leerer DataFrame")
         except Exception as e:
-            st.caption(f"Debug yfinance-Exception: {str(e)}")
+            st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
 
     # Alpaca-Fallback für andere Intervalle
     try:
@@ -144,32 +138,24 @@ def load_bars(ticker, _timeframe, start, end):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
-        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen, Index-Typ={type(bars.index).__name__}, Levels={bars.index.names if isinstance(bars.index, pd.MultiIndex) else 'kein MultiIndex'}")
-
         if bars.empty:
             return pd.DataFrame()
 
         # MultiIndex korrekt handhaben
         if isinstance(bars.index, pd.MultiIndex):
-            # Level 0 = symbol, Level 1 = timestamp
             if 'timestamp' in bars.index.names:
-                bars = bars.reset_index(level='timestamp')  # Timestamp als Spalte holen, Symbol-Level droppen
+                bars = bars.reset_index(level='timestamp')  # Timestamp als Spalte holen
             else:
                 bars = bars.reset_index(level=1, drop=True)  # Fallback: Level 1 droppen
 
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
 
-        # Timestamp als Index setzen (falls als Spalte vorhanden)
         if 'timestamp' in bars.columns:
             bars = bars.set_index('timestamp')
-            st.caption("Debug: 'timestamp' als Index gesetzt")
         else:
-            # Fallback: Index als Timestamp annehmen
             bars.index = pd.to_datetime(bars.index, errors='coerce')
-            st.caption("Debug: Index direkt als Timestamp geparst")
 
-        # DatetimeIndex sicherstellen
         if not isinstance(bars.index, pd.DatetimeIndex):
             bars.index = pd.to_datetime(bars.index, errors='coerce')
 
@@ -181,10 +167,9 @@ def load_bars(ticker, _timeframe, start, end):
             bars.index = bars.index.tz_convert(ny_tz)
 
         bars = bars.sort_index()
-        st.caption(f"Debug nach Parsing: {len(bars)} Kerzen, erstes Datum: {bars.index.min() if not bars.empty else 'NaT'}")
         return bars
     except Exception as e:
-        st.caption(f"Debug Alpaca-Exception: {str(e)}")
+        st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -403,12 +388,11 @@ with tabs[2]:
         max_lookback_days = 180
         start = now_ny - timedelta(days=max_lookback_days)
 
-        df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+        # Für 15 Minuten mehr Historie nutzen (yfinance kann das gut)
+        if timeframe_str == "15 Minuten":
+            start = now_ny - timedelta(days=60)  # 60 Tage für 15-Min-Charts
 
-        st.caption(f"Debug: {len(df)} Kerzen für {ticker} ({timeframe_str})")
-        if not df.empty:
-            df = df.sort_index()
-            st.dataframe(df.tail(5))  # Debug: Letzte 5 Kerzen zeigen
+        df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
 
         if df.empty:
             st.warning(
@@ -475,7 +459,17 @@ with tabs[2]:
                 title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
                 hovermode="x unified",
                 xaxis_rangeslider_visible=True,
-                xaxis=dict(autorange=True),
+                xaxis=dict(
+                    autorange=True,
+                    rangeselector=dict(
+                        buttons=list([
+                            dict(count=1, label="1M", step="month", stepmode="backward"),
+                            dict(count=3, label="3M", step="month", stepmode="backward"),
+                            dict(count=6, label="6M", step="month", stepmode="backward"),
+                            dict(step="all")
+                        ])
+                    )
+                ),
                 yaxis=dict(autorange=True)
             )
 
