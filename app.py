@@ -5,6 +5,7 @@ from plotly.subplots import make_subplots
 import pytz
 from datetime import datetime, timedelta
 import requests
+import yfinance as yf  # NEU: Für längere Intraday-Historie bei 15 Min
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -55,6 +56,7 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
+# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -91,6 +93,24 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
+    # Fallback auf yfinance für 15-Min-Intervalle (für längere Historie)
+    if _timeframe == TimeFrame(15, TimeFrameUnit.Minute):
+        try:
+            df = yf.download(ticker, start=start, end=end, interval="15m", prepost=False, progress=False)
+            if not df.empty:
+                df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                df.columns = ['open', 'high', 'low', 'close', 'volume']
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize('UTC').tz_convert(ny_tz)
+                else:
+                    df.index = df.index.tz_convert(ny_tz)
+                return df
+            else:
+                st.caption(f"yfinance: Keine Daten für {ticker} (15m)")
+        except Exception as e:
+            st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
+
+    # Alpaca für andere Intervalle
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -104,30 +124,19 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # 1. MultiIndex bereinigen – Symbol-Level explizit droppen
+        # MultiIndex bereinigen
         if isinstance(bars.index, pd.MultiIndex):
-            # Level 0 = Timestamp, Level 1 = Symbol
             bars = bars.reset_index(level=1, drop=True)
 
-        # 2. Falls Symbol als Spalte oder Index-Wert übrig ist → entfernen
-        if 'symbol' in bars.columns:
-            bars = bars.drop(columns=['symbol'])
+        # Timestamp als Index, falls nötig
+        if 'timestamp' in bars.columns:
+            bars = bars.set_index('timestamp')
 
-        # 3. Index zurücksetzen, falls nötig
-        bars = bars.reset_index(drop=False)
-
-        # 4. Timestamp-Spalte als Index setzen (meist heißt sie 'timestamp' oder 'index')
-        timestamp_col = 'timestamp' if 'timestamp' in bars.columns else bars.columns[0]
-        bars = bars.set_index(timestamp_col)
-
-        # 5. Sicherstellen, dass Index DatetimeIndex ist
+        # Zu DatetimeIndex konvertieren
         if not isinstance(bars.index, pd.DatetimeIndex):
-            bars.index = pd.to_datetime(bars.index, errors='coerce')
+            bars.index = pd.to_datetime(bars.index)
 
-        # 6. Ungültige Zeilen entfernen (falls Parsing-Fehler)
-        bars = bars[bars.index.notnull()]
-
-        # 7. Zeitzone setzen/konvertieren
+        # Zeitzone setzen/konvertieren
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
@@ -350,33 +359,83 @@ with tabs[2]:
         "Wöchentlich": TimeFrame.Week
     }
 
-    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)
+    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)  # Default Täglich
     timeframe = timeframe_options[timeframe_str]
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Realistische Begrenzung für IEX
+        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
         if timeframe_str == "15 Minuten":
-            lookback_days = 5  # ← auf 5 Tage reduzieren – erhöht Trefferquote stark
-            st.info("15-Min-Chart: Begrenzt auf die letzten 5 Tage (IEX-Limit). Längere Historie nur mit Täglich/Wöchentlich möglich.")
+            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
         elif timeframe_str == "Täglich":
-            lookback_days = 180  # 6 Monate
-        else:
-            lookback_days = 365  # 1 Jahr für Wöchentlich
-
-        start = now_ny - timedelta(days=lookback_days)
+            start = now_ny - timedelta(days=730)  # 2 Jahre
+        else:  # Wöchentlich
+            start = now_ny - timedelta(days=365*5)  # 5 Jahre
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
-
         if df.empty:
-            st.warning(
-                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
-                "IEX Intraday-Daten sind sehr kurz (oft nur 1–5 Tage). "
-                "Wechsle zu 'Täglich' – das funktioniert fast immer."
-            )
+            st.warning("Keine Daten für diesen Zeitrahmen")
         else:
-            # ... (dein gesamter Indikatoren- & Plot-Code hier unverändert)
-            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d %H:%M')} bis {df.index.max().strftime('%Y-%m-%d %H:%M')} | {len(df)} Kerzen")
+            df["ema20"] = ema(df["close"], 20)
+            df["ema50"] = ema(df["close"], 50)
+            df["RSI"] = rsi(df["close"])
+            df["ATR"] = atr(df)
+
+            # MACD berechnen
+            ema_fast = df['close'].ewm(span=12, adjust=False).mean()
+            ema_slow = df['close'].ewm(span=26, adjust=False).mean()
+            macd_line = ema_fast - ema_slow
+            signal_line = macd_line.ewm(span=9, adjust=False).mean()
+            histogram = macd_line - signal_line
+
+            # Divergenz-Punkte finden
+            div = rsi_divergence(df)
+            low_points = []
+            if "Bullish" in div or "Bearish" in div:
+                recent_low_idx = df['low'].argmin()
+                prev_low_idx = df['low'][:-30].argmin() if len(df) > 30 else None
+                low_points = [recent_low_idx] if recent_low_idx is not None else []
+                if prev_low_idx is not None:
+                    low_points.append(prev_low_idx)
+
+            fig = make_subplots(
+                rows=4, cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                row_heights=[0.5, 0.15, 0.15, 0.2]
+            )
+
+            fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+
+            fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
+
+            fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
+            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
+
+            for idx in low_points:
+                fig.add_annotation(
+                    x=df.index[idx],
+                    y=df['low'].iloc[idx],
+                    text="Low",
+                    showarrow=True,
+                    arrowhead=1,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor="red" if "Bearish" in div else "green",
+                    row=1, col=1
+                )
+
+            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
         st.info("Keine Daten für diesen Ticker")
 
