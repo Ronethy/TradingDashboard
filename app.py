@@ -163,15 +163,9 @@ def load_bars(ticker, _timeframe, start, end):
 
         bars = bars.set_index(timestamp_col)
 
-        # DatetimeIndex sicherstellen – Unix (ms/s) oder String
+        # Unix-Timestamp parsen – explizit ms annehmen (Alpaca Standard)
         if not isinstance(bars.index, pd.DatetimeIndex):
-            try:
-                bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
-            except ValueError:
-                try:
-                    bars.index = pd.to_datetime(bars.index, unit='s', utc=True, errors='coerce')
-                except ValueError:
-                    bars.index = pd.to_datetime(bars.index, errors='coerce')
+            bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
 
         bars = bars[bars.index.notnull()]
 
@@ -181,6 +175,7 @@ def load_bars(ticker, _timeframe, start, end):
             bars.index = bars.index.tz_convert(ny_tz)
 
         bars = bars.sort_index()
+        st.caption(f"Debug nach Parsing: {len(bars)} Kerzen, erstes Datum: {bars.index.min()}")
         return bars
     except Exception as e:
         st.caption(f"Debug Alpaca-Exception: {str(e)}")
