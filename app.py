@@ -6,7 +6,7 @@ import pytz
 from datetime import datetime, timedelta
 import requests
 
-# yfinance optional (Fallback für längere 15-Min-Historie)
+# yfinance optional (Fallback für lange 15-Min-Historie)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
