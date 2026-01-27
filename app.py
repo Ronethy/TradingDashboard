@@ -118,16 +118,17 @@ def load_bars(ticker, _timeframe, start, end):
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
-                if df.index.tz is None:
-                    df.index = df.index.tz_localize('UTC').tz_convert(ny_tz)
-                else:
+                # yfinance-Index ist oft tz-aware – konvertieren
+                if df.index.tz is not None:
                     df.index = df.index.tz_convert(ny_tz)
+                else:
+                    df.index = pd.to_datetime(df.index, utc=True).tz_convert(ny_tz)
                 df = df.sort_index()
                 return df
         except Exception as e:
             st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
 
-    # Alpaca-Fallback für andere Intervalle
+    # Alpaca-Fallback
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -154,8 +155,13 @@ def load_bars(ticker, _timeframe, start, end):
         timestamp_col = next((col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower()), bars.columns[0])
         bars = bars.set_index(timestamp_col)
 
+        # Unix-Timestamp parsen (ms oder s)
         if not isinstance(bars.index, pd.DatetimeIndex):
-            bars.index = pd.to_datetime(bars.index, errors='coerce')
+            # Versuche als ms, dann s
+            try:
+                bars.index = pd.to_datetime(bars.index, unit='ms', errors='coerce')
+            except ValueError:
+                bars.index = pd.to_datetime(bars.index, unit='s', errors='coerce')
 
         bars = bars[bars.index.notnull()]
 
@@ -394,6 +400,7 @@ with tabs[2]:
                 "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
             )
         else:
+            # Indikatoren berechnen
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
