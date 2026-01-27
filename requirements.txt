@@ -4,3 +4,4 @@ numpy
 plotly
 alpaca-py
 pytz
+yfinance
