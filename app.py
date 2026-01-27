@@ -95,15 +95,17 @@ def load_daily_data(symbols):
                 except:
                     pass
         except Exception as e:
-            st.caption(f"Batch-Fehler: {str(e)}")
+            pass  # Stille Fehler, um App nicht zu crashen
     return data
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    # yfinance für alle Intraday-Intervalle bevorzugen
-    if YFINANCE_AVAILABLE and _timeframe in [TimeFrame(1, TimeFrameUnit.Minute),
-                                            TimeFrame(5, TimeFrameUnit.Minute),
-                                            TimeFrame(15, TimeFrameUnit.Minute)]:
+    # yfinance bevorzugen für Intraday
+    if YFINANCE_AVAILABLE and _timeframe in [
+        TimeFrame(1, TimeFrameUnit.Minute),
+        TimeFrame(5, TimeFrameUnit.Minute),
+        TimeFrame(15, TimeFrameUnit.Minute)
+    ]:
         try:
             interval_map = {
                 TimeFrame(1, TimeFrameUnit.Minute): "1m",
@@ -128,8 +130,8 @@ def load_bars(ticker, _timeframe, start, end):
                     df.index = df.index.tz_convert(ny_tz)
                 df = df.sort_index()
                 return df
-        except Exception as e:
-            st.caption(f"yfinance-Fehler {ticker} ({interval}): {str(e)}")
+        except Exception:
+            pass
 
     # Alpaca-Fallback
     try:
@@ -171,8 +173,7 @@ def load_bars(ticker, _timeframe, start, end):
 
         bars = bars.sort_index()
         return bars
-    except Exception as e:
-        st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
+    except Exception:
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -391,13 +392,13 @@ with tabs[2]:
     if ticker in daily_data and not daily_data[ticker].empty:
         # Dynamischer Rückblick je nach Intervall
         if timeframe_str == "1 Minute":
-            start = now_ny - timedelta(days=1)   # 24 Stunden
+            start = now_ny - timedelta(hours=24)  # 24 Stunden
         elif timeframe_str == "5 Minuten":
-            start = now_ny - timedelta(days=3)   # 3 Tage
+            start = now_ny - timedelta(days=3)    # 3 Tage
         elif timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=60)  # 60 Tage
+            start = now_ny - timedelta(days=60)   # 60 Tage
         elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=180) # 6 Monate
+            start = now_ny - timedelta(days=180)  # 6 Monate
         else:  # Wöchentlich
             start = now_ny - timedelta(days=365*2)  # 2 Jahre
 
@@ -405,21 +406,30 @@ with tabs[2]:
 
         if df.empty:
             st.warning(
-                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d %H:%M')}. "
                 "Versuche einen anderen Zeitrahmen oder Ticker."
             )
         else:
+            # Indikatoren berechnen
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
             df["ATR"] = atr(df)
 
+            # Bollinger Bands (20 Perioden, 2 StdAbw)
+            df['bb_mid'] = df['close'].rolling(window=20).mean()
+            df['bb_std'] = df['close'].rolling(window=20).std()
+            df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
+            df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
+
+            # MACD
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema_fast - ema_slow
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
+            # RSI Divergenz
             div = rsi_divergence(df)
             low_points = []
             if "Bullish" in div or "Bearish" in div:
@@ -436,9 +446,13 @@ with tabs[2]:
                 row_heights=[0.5, 0.15, 0.15, 0.2]
             )
 
+            # Candlesticks + Bollinger + EMAs
             fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20", line=dict(color="#00BFFF")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50", line=dict(color="#FF8C00")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["bb_upper"], name="BB Upper", line=dict(color="rgba(255,0,0,0.5)", dash="dash")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
             fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
 
@@ -464,7 +478,7 @@ with tabs[2]:
                 )
 
             fig.update_layout(
-                height=600,
+                height=700,
                 title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
                 hovermode="x unified",
                 xaxis_rangeslider_visible=True,
@@ -472,9 +486,9 @@ with tabs[2]:
                     autorange=True,
                     rangeselector=dict(
                         buttons=list([
-                            dict(count=1, label="1M", step="month", stepmode="backward"),
-                            dict(count=3, label="3M", step="month", stepmode="backward"),
-                            dict(count=6, label="6M", step="month", stepmode="backward"),
+                            dict(count=1, label="1 Tag", step="day", stepmode="backward"),
+                            dict(count=3, label="3 Tage", step="day", stepmode="backward"),
+                            dict(count=7, label="1 Woche", step="day", stepmode="backward"),
                             dict(step="all")
                         ])
                     )
