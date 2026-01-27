@@ -6,7 +6,7 @@ import pytz
 from datetime import datetime, timedelta
 import requests
 
-# yfinance optional importieren (Fallback für 15-Min-Charts)
+# yfinance optional (Fallback für lange 15-Min-Historie)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
@@ -55,7 +55,7 @@ st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M'
 if market_state == "PRE":
     st.warning("Pre-Market: Viele Scores & Ampele sind eingeschränkt – warte auf Open (9:30 ET)")
 
-# Globale Symbol-Auswahl oben
+# Globale Ticker-Auswahl
 st.subheader("Ticker auswählen (für Chart & Trading)")
 ticker = st.selectbox(
     "Aktie wählen",
@@ -118,7 +118,7 @@ def load_bars(ticker, _timeframe, start, end):
                     df.index = df.index.tz_localize('UTC').tz_convert(ny_tz)
                 else:
                     df.index = df.index.tz_convert(ny_tz)
-                df = df.sort_index()  # Zeit sortieren
+                df = df.sort_index()
                 return df
         except Exception as e:
             st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
@@ -137,7 +137,7 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex sicher bereinigen
+        # MultiIndex bereinigen
         if isinstance(bars.index, pd.MultiIndex):
             bars = bars.xs(ticker, level=1, drop_level=True) if ticker in bars.index.levels[1] else bars.reset_index(level=1, drop=True)
 
@@ -450,7 +450,25 @@ with tabs[2]:
                     row=1, col=1
                 )
 
-            fig.update_layout(height=600, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
+            fig.update_layout(
+                height=600,
+                title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
+                hovermode="x unified",
+                xaxis_rangeslider_visible=True,  # Slider für Scrollen & Zoom
+                xaxis=dict(
+                    autorange=True,
+                    rangeselector=dict(
+                        buttons=list([
+                            dict(count=1, label="1M", step="month", stepmode="backward"),
+                            dict(count=3, label="3M", step="month", stepmode="backward"),
+                            dict(count=6, label="6M", step="month", stepmode="backward"),
+                            dict(step="all")
+                        ])
+                    )
+                ),
+                yaxis=dict(autorange=True)
+            )
+
             st.plotly_chart(fig, use_container_width=True)
 
             st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d %H:%M')} bis {df.index.max().strftime('%Y-%m-%d %H:%M')} | {len(df)} Kerzen")
