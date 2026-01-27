@@ -64,7 +64,6 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
-# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -101,7 +100,7 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    # yfinance für 15-Minuten-Intervalle (längere Historie)
+    # yfinance für 15-Minuten (längere Historie)
     if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
         try:
             df = yf.download(
@@ -119,11 +118,12 @@ def load_bars(ticker, _timeframe, start, end):
                     df.index = df.index.tz_localize('UTC').tz_convert(ny_tz)
                 else:
                     df.index = df.index.tz_convert(ny_tz)
+                df = df.sort_index()  # Zeit sortieren
                 return df
         except Exception as e:
             st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
 
-    # Alpaca für alle anderen Intervalle
+    # Alpaca für andere Intervalle
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -139,33 +139,28 @@ def load_bars(ticker, _timeframe, start, end):
 
         # MultiIndex sicher bereinigen
         if isinstance(bars.index, pd.MultiIndex):
-            # Ticker als Level 1 → nur Timestamp behalten
             bars = bars.xs(ticker, level=1, drop_level=True) if ticker in bars.index.levels[1] else bars.reset_index(level=1, drop=True)
 
-        # Falls Symbol als Spalte oder Index-Wert übrig
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
         if bars.index.name == 'symbol' or bars.index.name == ticker:
             bars = bars.reset_index(drop=True)
 
-        # Index zurücksetzen und Timestamp setzen
         bars = bars.reset_index(drop=False)
         timestamp_col = next((col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower()), bars.columns[0])
         bars = bars.set_index(timestamp_col)
 
-        # DatetimeIndex sicherstellen
         if not isinstance(bars.index, pd.DatetimeIndex):
             bars.index = pd.to_datetime(bars.index, errors='coerce')
 
-        # Ungültige Zeilen entfernen
         bars = bars[bars.index.notnull()]
 
-        # Zeitzone setzen/konvertieren
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
             bars.index = bars.index.tz_convert(ny_tz)
 
+        bars = bars.sort_index()
         return bars
     except Exception as e:
         st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
@@ -373,7 +368,7 @@ with tabs[2]:
         "Wöchentlich": TimeFrame.Week
     }
 
-    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)  # Default Täglich
+    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)
     timeframe = timeframe_options[timeframe_str]
 
     ticker = st.session_state.selected_ticker
@@ -389,6 +384,11 @@ with tabs[2]:
         start = now_ny - timedelta(days=lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
+        st.caption(f"Debug: {len(df)} Kerzen für {ticker} ({timeframe_str})")
+        if not df.empty:
+            df = df.sort_index()
+            st.dataframe(df.tail(5))  # Debug: Letzte 5 Kerzen zeigen
 
         if df.empty:
             st.warning(
@@ -450,10 +450,10 @@ with tabs[2]:
                     row=1, col=1
                 )
 
-            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
+            fig.update_layout(height=600, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d %H:%M')} bis {df.index.max().strftime('%Y-%m-%d %H:%M')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
