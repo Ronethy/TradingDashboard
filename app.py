@@ -6,7 +6,7 @@ import pytz
 from datetime import datetime, timedelta
 import requests
 
-# yfinance optional (Fallback für lange 15-Min-Historie)
+# yfinance optional (Fallback für längere 15-Min-Historie)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
@@ -100,6 +100,10 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
+    # Maximal 6 Monate zurück – hart begrenzen
+    max_start = now_ny - timedelta(days=180)
+    start = max(start, max_start)
+
     # yfinance für 15-Minuten (längere Historie)
     if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
         try:
@@ -123,7 +127,7 @@ def load_bars(ticker, _timeframe, start, end):
         except Exception as e:
             st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
 
-    # Alpaca für andere Intervalle
+    # Alpaca-Fallback für andere Intervalle
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -373,15 +377,9 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Rückblick dynamisch setzen
-        if timeframe_str == "15 Minuten":
-            lookback_days = 30  # yfinance kann mehr, IEX nur wenig
-        elif timeframe_str == "Täglich":
-            lookback_days = 180  # 6 Monate
-        else:
-            lookback_days = 365 * 2  # 2 Jahre für Wöchentlich
-
-        start = now_ny - timedelta(days=lookback_days)
+        # Maximal 6 Monate zurück – hart begrenzen
+        max_lookback_days = 180
+        start = now_ny - timedelta(days=max_lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
 
@@ -454,7 +452,7 @@ with tabs[2]:
                 height=600,
                 title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
                 hovermode="x unified",
-                xaxis_rangeslider_visible=True,  # Slider für Scrollen & Zoom
+                xaxis_rangeslider_visible=True,
                 xaxis=dict(
                     autorange=True,
                     rangeselector=dict(
@@ -471,7 +469,7 @@ with tabs[2]:
 
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d %H:%M')} bis {df.index.max().strftime('%Y-%m-%d %H:%M')} | {len(df)} Kerzen")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
