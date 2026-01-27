@@ -338,18 +338,19 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
-        if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
-        elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=730)  # 2 Jahre
-        else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*5)  # 5 Jahre
+        # Maximal 6 Monate zurück – hart begrenzen
+        max_lookback_days = 180
+        start = now_ny - timedelta(days=max_lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
         if df.empty:
-            st.warning("Keine Daten für diesen Zeitrahmen")
+            st.warning(
+                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
+            )
         else:
+            # Indikatoren berechnen
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
@@ -376,7 +377,7 @@ with tabs[2]:
                 rows=4, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.05,
-                row_heights=[0.5, 0.15, 0.30, 0.2]
+                row_heights=[0.5, 0.15, 0.15, 0.2]
             )
 
             fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
@@ -386,11 +387,38 @@ with tabs[2]:
             fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-            fig.update_layout(height=800, title=f"{ticker} – Daily", hovermode="x unified")
+
+            # MACD-Traces (wenn vorhanden)
+            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
+            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
+
+            # Divergenz-Anmerkungen
+            for idx in low_points:
+                fig.add_annotation(
+                    x=df.index[idx],
+                    y=df['low'].iloc[idx],
+                    text="Low",
+                    showarrow=True,
+                    arrowhead=1,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor="red" if "Bearish" in div else "green",
+                    row=1, col=1
+                )
+
+            fig.update_layout(
+                height=800,
+                title=f"{ticker} – {timeframe_str}",
+                hovermode="x unified",
+                xaxis_rangeslider_visible=True,
+                xaxis=dict(autorange=True),
+                yaxis=dict(autorange=True)
+            )
+
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
-        else:
-            st.info("Keine Daten für diesen Ticker")
+
+            st.caption(f"Letzte Kerze: {df.index[-1]} | Daten von {df.index.min()} bis {df.index.max()} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
