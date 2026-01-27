@@ -147,23 +147,30 @@ def load_bars(ticker, _timeframe, start, end):
 
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
-        if bars.index.name == 'symbol' or bars.index.name == ticker:
-            bars = bars.reset_index(drop=True)
 
+        # Index zurücksetzen
         bars = bars.reset_index(drop=False)
-        timestamp_col = 'timestamp'  # Explizit 'timestamp' verwenden
+
+        # Timestamp-Spalte finden – flexibel suchen
+        possible_timestamp_cols = [col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower() or 'index' in col.lower()]
+        timestamp_col = possible_timestamp_cols[0] if possible_timestamp_cols else bars.columns[0]
+
         bars = bars.set_index(timestamp_col)
 
-        # Unix-Timestamp parsen (ms oder s)
+        # DatetimeIndex sicherstellen – Unix (ms/s) oder String
         if not isinstance(bars.index, pd.DatetimeIndex):
-            # Versuche als ms, dann s
+            # Versuche als Unix ms, dann s, dann String-Parsing
             try:
-                bars.index = pd.to_datetime(bars.index, unit='ms', errors='coerce')
+                bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
             except ValueError:
-                bars.index = pd.to_datetime(bars.index, unit='s', errors='coerce')
+                try:
+                    bars.index = pd.to_datetime(bars.index, unit='s', utc=True, errors='coerce')
+                except ValueError:
+                    bars.index = pd.to_datetime(bars.index, errors='coerce')
 
         bars = bars[bars.index.notnull()]
 
+        # Zeitzone setzen/konvertieren
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
