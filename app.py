@@ -104,8 +104,11 @@ def load_bars(ticker, _timeframe, start, end):
     max_start = now_ny - timedelta(days=180)
     start = max(start, max_start)
 
+    st.caption(f"Debug load_bars: timeframe={_timeframe}, start={start.date()}, yfinance_available={YFINANCE_AVAILABLE}")
+
     # yfinance für 15-Minuten (längere Historie)
     if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
+        st.caption("Debug: yfinance-Block aufgerufen")
         try:
             df = yf.download(
                 ticker,
@@ -115,6 +118,7 @@ def load_bars(ticker, _timeframe, start, end):
                 prepost=False,
                 progress=False
             )
+            st.caption(f"Debug yfinance: {len(df)} Kerzen geladen, Index-Typ={type(df.index).__name__}")
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -124,8 +128,10 @@ def load_bars(ticker, _timeframe, start, end):
                     df.index = df.index.tz_convert(ny_tz)
                 df = df.sort_index()
                 return df
+            else:
+                st.caption("Debug yfinance: leerer DataFrame")
         except Exception as e:
-            st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
+            st.caption(f"Debug yfinance-Exception: {str(e)}")
 
     # Alpaca-Fallback für andere Intervalle
     try:
@@ -138,6 +144,7 @@ def load_bars(ticker, _timeframe, start, end):
             limit=10000
         )
         bars = client.get_stock_bars(req).df
+        st.caption(f"Debug Alpaca: {len(bars)} Roh-Kerzen")
         if bars.empty:
             return pd.DataFrame()
 
@@ -148,7 +155,6 @@ def load_bars(ticker, _timeframe, start, end):
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
 
-        # Index zurücksetzen
         bars = bars.reset_index(drop=False)
 
         # Timestamp-Spalte finden – flexibel suchen
@@ -159,7 +165,6 @@ def load_bars(ticker, _timeframe, start, end):
 
         # DatetimeIndex sicherstellen – Unix (ms/s) oder String
         if not isinstance(bars.index, pd.DatetimeIndex):
-            # Versuche als Unix ms, dann s, dann String-Parsing
             try:
                 bars.index = pd.to_datetime(bars.index, unit='ms', utc=True, errors='coerce')
             except ValueError:
@@ -170,7 +175,6 @@ def load_bars(ticker, _timeframe, start, end):
 
         bars = bars[bars.index.notnull()]
 
-        # Zeitzone setzen/konvertieren
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
         else:
@@ -179,7 +183,7 @@ def load_bars(ticker, _timeframe, start, end):
         bars = bars.sort_index()
         return bars
     except Exception as e:
-        st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
+        st.caption(f"Debug Alpaca-Exception: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -226,7 +230,6 @@ with tabs[0]:
         vol_avg = df["volume"].mean()
         vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
 
-        # Snapshot für Score
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
@@ -254,7 +257,6 @@ with tabs[0]:
         df_movers = pd.DataFrame(enhanced_movers)
         df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
 
-        # Empfehlung
         def get_recommendation(row):
             gap = row["Gap %"]
             score = row["Score"]
@@ -267,7 +269,6 @@ with tabs[0]:
 
         df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
 
-        # Farbliche Hervorhebung
         def highlight_row(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -281,7 +282,6 @@ with tabs[0]:
 
         st.dataframe(styled, width='stretch', hide_index=True)
 
-        # News nur für Top 5 laden
         st.subheader("News zu Top Early Movers")
         top_symbols = df_movers.head(5)["Symbol"].tolist()
         for sym in top_symbols:
@@ -353,7 +353,6 @@ with tabs[1]:
     if rows:
         df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
 
-        # Farbliche Hervorhebung
         def highlight_scanner(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -367,7 +366,6 @@ with tabs[1]:
 
         st.dataframe(styled_scanner, width='stretch', hide_index=True)
 
-        # News nur für Top 5 laden
         st.subheader("News zu Top S&P 500 Kandidaten")
         top_symbols_scanner = df_scores.head(5)["Symbol"].tolist()
         for sym in top_symbols_scanner:
@@ -400,31 +398,34 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
-        if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
-        elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=730)  # 2 Jahre
-        else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*5)  # 5 Jahre
+        # Maximal 6 Monate zurück – hart begrenzen
+        max_lookback_days = 180
+        start = now_ny - timedelta(days=max_lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
+        st.caption(f"Debug: {len(df)} Kerzen für {ticker} ({timeframe_str})")
+        if not df.empty:
+            df = df.sort_index()
+            st.dataframe(df.tail(5))  # Debug: Letzte 5 Kerzen zeigen
+
         if df.empty:
-            st.warning("Keine Daten für diesen Zeitrahmen")
+            st.warning(
+                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
+            )
         else:
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
             df["ATR"] = atr(df)
 
-            # MACD berechnen
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema_fast - ema_slow
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
-            # Divergenz-Punkte finden
             div = rsi_divergence(df)
             low_points = []
             if "Bullish" in div or "Bearish" in div:
@@ -468,10 +469,18 @@ with tabs[2]:
                     row=1, col=1
                 )
 
-            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
+            fig.update_layout(
+                height=600,
+                title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
+                hovermode="x unified",
+                xaxis_rangeslider_visible=True,
+                xaxis=dict(autorange=True),
+                yaxis=dict(autorange=True)
+            )
+
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
