@@ -6,13 +6,13 @@ import pytz
 from datetime import datetime, timedelta
 import requests
 
-# yfinance optional (Fallback für lange 15-Min-Historie)
+# yfinance optional (für Intraday-Intervalle sehr wichtig)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
-    st.warning("yfinance nicht installiert → 15-Min-Charts haben nur sehr kurze Historie. "
+    st.warning("yfinance nicht installiert → Intraday-Charts (1/5/15 Min) haben nur sehr kurze Historie. "
                "Installiere mit 'pip install yfinance' für bessere Daten.")
 
 from alpaca.data.historical import StockHistoricalDataClient
@@ -100,18 +100,22 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    # Maximal 6 Monate zurück – hart begrenzen
-    max_start = now_ny - timedelta(days=180)
-    start = max(start, max_start)
-
-    # yfinance für 15-Minuten (längere Historie)
-    if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
+    # yfinance für alle Intraday-Intervalle bevorzugen
+    if YFINANCE_AVAILABLE and _timeframe in [TimeFrame(1, TimeFrameUnit.Minute),
+                                            TimeFrame(5, TimeFrameUnit.Minute),
+                                            TimeFrame(15, TimeFrameUnit.Minute)]:
         try:
+            interval_map = {
+                TimeFrame(1, TimeFrameUnit.Minute): "1m",
+                TimeFrame(5, TimeFrameUnit.Minute): "5m",
+                TimeFrame(15, TimeFrameUnit.Minute): "15m"
+            }
+            interval = interval_map[_timeframe]
             df = yf.download(
                 ticker,
                 start=start,
                 end=end,
-                interval="15m",
+                interval=interval,
                 prepost=False,
                 progress=False
             )
@@ -125,9 +129,9 @@ def load_bars(ticker, _timeframe, start, end):
                 df = df.sort_index()
                 return df
         except Exception as e:
-            st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
+            st.caption(f"yfinance-Fehler {ticker} ({interval}): {str(e)}")
 
-    # Alpaca-Fallback für andere Intervalle
+    # Alpaca-Fallback
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -141,12 +145,11 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex korrekt handhaben
         if isinstance(bars.index, pd.MultiIndex):
             if 'timestamp' in bars.index.names:
-                bars = bars.reset_index(level='timestamp')  # Timestamp als Spalte holen
+                bars = bars.reset_index(level='timestamp')
             else:
-                bars = bars.reset_index(level=1, drop=True)  # Fallback: Level 1 droppen
+                bars = bars.reset_index(level=1, drop=True)
 
         if 'symbol' in bars.columns:
             bars = bars.drop(columns=['symbol'])
@@ -374,30 +377,36 @@ with tabs[2]:
     st.subheader("📈 Chart Analyse")
 
     timeframe_options = {
+        "1 Minute": TimeFrame(1, TimeFrameUnit.Minute),
+        "5 Minuten": TimeFrame(5, TimeFrameUnit.Minute),
         "15 Minuten": TimeFrame(15, TimeFrameUnit.Minute),
         "Täglich": TimeFrame.Day,
         "Wöchentlich": TimeFrame.Week
     }
 
-    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)
+    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=2)
     timeframe = timeframe_options[timeframe_str]
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Maximal 6 Monate zurück – hart begrenzen
-        max_lookback_days = 180
-        start = now_ny - timedelta(days=max_lookback_days)
-
-        # Für 15 Minuten mehr Historie nutzen (yfinance kann das gut)
-        if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=60)  # 60 Tage für 15-Min-Charts
+        # Dynamischer Rückblick je nach Intervall
+        if timeframe_str == "1 Minute":
+            start = now_ny - timedelta(days=1)   # 24 Stunden
+        elif timeframe_str == "5 Minuten":
+            start = now_ny - timedelta(days=3)   # 3 Tage
+        elif timeframe_str == "15 Minuten":
+            start = now_ny - timedelta(days=60)  # 60 Tage
+        elif timeframe_str == "Täglich":
+            start = now_ny - timedelta(days=180) # 6 Monate
+        else:  # Wöchentlich
+            start = now_ny - timedelta(days=365*2)  # 2 Jahre
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
 
         if df.empty:
             st.warning(
                 f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
-                "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
+                "Versuche einen anderen Zeitrahmen oder Ticker."
             )
         else:
             df["ema20"] = ema(df["close"], 20)
@@ -475,7 +484,7 @@ with tabs[2]:
 
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d %H:%M')} bis {df.index.max().strftime('%Y-%m-%d %H:%M')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
