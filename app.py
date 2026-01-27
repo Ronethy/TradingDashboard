@@ -55,7 +55,7 @@ st.write(f"Marktstatus: {market_state} | Zeit: {now_ny.strftime('%Y-%m-%d %H:%M'
 if market_state == "PRE":
     st.warning("Pre-Market: Viele Scores & Ampele sind eingeschränkt – warte auf Open (9:30 ET)")
 
-# Globale Ticker-Auswahl
+# Globale Symbol-Auswahl oben
 st.subheader("Ticker auswählen (für Chart & Trading)")
 ticker = st.selectbox(
     "Aktie wählen",
@@ -64,6 +64,7 @@ ticker = st.selectbox(
     key="global_ticker_select"
 )
 
+# State synchronisieren
 if ticker != st.session_state.selected_ticker:
     st.session_state.selected_ticker = ticker
     st.rerun()
@@ -100,35 +101,6 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    # Maximal 6 Monate zurück – hart begrenzen
-    max_start = now_ny - timedelta(days=180)
-    start = max(start, max_start)
-
-    # yfinance für 15-Minuten (längere Historie)
-    if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
-        try:
-            df = yf.download(
-                ticker,
-                start=start,
-                end=end,
-                interval="15m",
-                prepost=False,
-                progress=False
-            )
-            if not df.empty:
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                df.columns = ['open', 'high', 'low', 'close', 'volume']
-                # yfinance-Index ist oft tz-aware – konvertieren
-                if df.index.tz is not None:
-                    df.index = df.index.tz_convert(ny_tz)
-                else:
-                    df.index = pd.to_datetime(df.index, utc=True).tz_convert(ny_tz)
-                df = df.sort_index()
-                return df
-        except Exception as e:
-            st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
-
-    # Alpaca-Fallback
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -142,38 +114,12 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex bereinigen
         if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.xs(ticker, level=1, drop_level=True) if ticker in bars.index.levels[1] else bars.reset_index(level=1, drop=True)
-
-        if 'symbol' in bars.columns:
-            bars = bars.drop(columns=['symbol'])
-        if bars.index.name == 'symbol' or bars.index.name == ticker:
-            bars = bars.reset_index(drop=True)
-
-        bars = bars.reset_index(drop=False)
-        timestamp_col = next((col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower()), bars.columns[0])
-        bars = bars.set_index(timestamp_col)
-
-        # Unix-Timestamp parsen (ms oder s)
-        if not isinstance(bars.index, pd.DatetimeIndex):
-            # Versuche als ms, dann s
-            try:
-                bars.index = pd.to_datetime(bars.index, unit='ms', errors='coerce')
-            except ValueError:
-                bars.index = pd.to_datetime(bars.index, unit='s', errors='coerce')
-
-        bars = bars[bars.index.notnull()]
-
-        if bars.index.tz is None:
-            bars.index = bars.index.tz_localize('UTC').tz_convert(ny_tz)
-        else:
-            bars.index = bars.index.tz_convert(ny_tz)
-
-        bars = bars.sort_index()
+            bars = bars.reset_index(level=1, drop=True)
+        bars.index = bars.index.tz_convert(ny_tz)
         return bars
     except Exception as e:
-        st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
+        st.caption(f"Bars-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -220,6 +166,7 @@ with tabs[0]:
         vol_avg = df["volume"].mean()
         vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
 
+        # Snapshot für Score
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
@@ -247,6 +194,7 @@ with tabs[0]:
         df_movers = pd.DataFrame(enhanced_movers)
         df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
 
+        # Empfehlung
         def get_recommendation(row):
             gap = row["Gap %"]
             score = row["Score"]
@@ -259,6 +207,7 @@ with tabs[0]:
 
         df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
 
+        # Farbliche Hervorhebung
         def highlight_row(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -269,9 +218,9 @@ with tabs[0]:
                 return ['background-color: #f8d7da; color: black'] * len(row)
 
         styled = df_movers.style.apply(highlight_row, axis=1)
-
         st.dataframe(styled, width='stretch', hide_index=True)
 
+        # News nur für Top 5 laden
         st.subheader("News zu Top Early Movers")
         top_symbols = df_movers.head(5)["Symbol"].tolist()
         for sym in top_symbols:
@@ -333,7 +282,12 @@ with tabs[1]:
         elif score >= 50:
             rec = "Beobachten / Watchlist"
 
-        rows.append({"Symbol": sym, "Score": score, "Bias": bias, "Empfehlung": rec})
+        rows.append({
+            "Symbol": sym,
+            "Score": score,
+            "Bias": bias,
+            "Empfehlung": rec
+        })
 
     if rows:
         df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
@@ -351,6 +305,7 @@ with tabs[1]:
 
         st.dataframe(styled_scanner, width='stretch', hide_index=True)
 
+        # News nur für Top 5 laden
         st.subheader("News zu Top S&P 500 Kandidaten")
         top_symbols_scanner = df_scores.head(5)["Symbol"].tolist()
         for sym in top_symbols_scanner:
@@ -383,35 +338,31 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Maximal 6 Monate zurück – hart begrenzen
-        max_lookback_days = 180
-        start = now_ny - timedelta(days=max_lookback_days)
+        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
+        if timeframe_str == "15 Minuten":
+            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
+        elif timeframe_str == "Täglich":
+            start = now_ny - timedelta(days=730)  # 2 Jahre
+        else:  # Wöchentlich
+            start = now_ny - timedelta(days=365*5)  # 5 Jahre
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
-
-        st.caption(f"Debug: {len(df)} Kerzen für {ticker} ({timeframe_str})")
-        if not df.empty:
-            df = df.sort_index()
-            st.dataframe(df.tail(5))  # Debug: Letzte 5 Kerzen zeigen
-
         if df.empty:
-            st.warning(
-                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
-                "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
-            )
+            st.warning("Keine Daten für diesen Zeitrahmen")
         else:
-            # Indikatoren berechnen
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
             df["ATR"] = atr(df)
 
+            # MACD berechnen
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema_fast - ema_slow
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
+            # Divergenz-Punkte finden
             div = rsi_divergence(df)
             low_points = []
             if "Bullish" in div or "Bearish" in div:
@@ -425,58 +376,21 @@ with tabs[2]:
                 rows=4, cols=1,
                 shared_xaxes=True,
                 vertical_spacing=0.05,
-                row_heights=[0.5, 0.15, 0.15, 0.2]
+                row_heights=[0.5, 0.15, 0.30, 0.2]
             )
 
             fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
-
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA 20", line=dict(color="#00BFFF")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA 50", line=dict(color="#FF8C00")), row=1, col=1)
             fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
-
             fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-
-            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
-
-            for idx in low_points:
-                fig.add_annotation(
-                    x=df.index[idx],
-                    y=df['low'].iloc[idx],
-                    text="Low",
-                    showarrow=True,
-                    arrowhead=1,
-                    arrowsize=1,
-                    arrowwidth=2,
-                    arrowcolor="red" if "Bearish" in div else "green",
-                    row=1, col=1
-                )
-
-            fig.update_layout(
-                height=600,
-                title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
-                hovermode="x unified",
-                xaxis_rangeslider_visible=True,
-                xaxis=dict(
-                    autorange=True,
-                    rangeselector=dict(
-                        buttons=list([
-                            dict(count=1, label="1M", step="month", stepmode="backward"),
-                            dict(count=3, label="3M", step="month", stepmode="backward"),
-                            dict(count=6, label="6M", step="month", stepmode="backward"),
-                            dict(step="all")
-                        ])
-                    )
-                ),
-                yaxis=dict(autorange=True)
-            )
-
+            fig.update_layout(height=800, title=f"{ticker} – Daily", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
-
-            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
+            st.caption(f"Letzte Kerze: {df.index[-1]}")
+        else:
+            st.info("Keine Daten für diesen Ticker")
     else:
         st.info("Keine Daten für diesen Ticker")
 
@@ -500,7 +414,6 @@ with tabs[3]:
         if not df_ind.empty:
             latest = df_ind.iloc[-1]
             vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
-
             snap = MarketSnapshot(
                 symbol=ticker,
                 price=float(latest["close"]),
@@ -512,11 +425,11 @@ with tabs[3]:
                 volume_ratio=vol_ratio,
                 market_state=market_state
             )
-
             score = calculate_trend_score(snap)
             bias = get_option_bias(snap, score)
             plan = generate_trade_plan(snap, score)
 
+            # Ampel-Logik visuell
             if score >= 70:
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
@@ -532,6 +445,7 @@ with tabs[3]:
             else:
                 st.info("Kein valider Trade-Plan")
 
+            # Zusatz-Indikatoren (neu)
             st.subheader("Zusatz-Indikatoren")
             col_div, col_macd = st.columns(2)
 
@@ -573,6 +487,7 @@ with tabs[3]:
                 for r in reasons_s:
                     st.write("• " + r)
 
+            # News für ausgewähltes Symbol laden
             st.subheader("News zu dieser Aktie")
             news = get_stock_news(ticker, alpha_vantage_key, limit=3)
             if news:
@@ -584,7 +499,6 @@ with tabs[3]:
                 st.markdown("---")
             else:
                 st.info("Keine News verfügbar")
-
         else:
             st.warning("Keine Daten nach Berechnung")
     else:
