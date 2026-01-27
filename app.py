@@ -5,7 +5,15 @@ from plotly.subplots import make_subplots
 import pytz
 from datetime import datetime, timedelta
 import requests
-import yfinance as yf  # NEU: Für längere Intraday-Historie bei 15 Min
+
+# yfinance optional importieren (Fallback für 15-Min-Charts)
+try:
+    import yfinance as yf
+    YFINANCE_AVAILABLE = True
+except ImportError:
+    YFINANCE_AVAILABLE = False
+    st.warning("yfinance nicht installiert → 15-Min-Charts haben nur sehr kurze Historie. "
+               "Installiere mit 'pip install yfinance' für bessere Daten.")
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
@@ -93,10 +101,17 @@ def load_daily_data(symbols):
 
 @st.cache_data(ttl=60)
 def load_bars(ticker, _timeframe, start, end):
-    # Fallback auf yfinance für 15-Min-Intervalle (für längere Historie)
-    if _timeframe == TimeFrame(15, TimeFrameUnit.Minute):
+    # yfinance für 15-Minuten-Intervalle (längere Historie)
+    if _timeframe == TimeFrame(15, TimeFrameUnit.Minute) and YFINANCE_AVAILABLE:
         try:
-            df = yf.download(ticker, start=start, end=end, interval="15m", prepost=False, progress=False)
+            df = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                interval="15m",
+                prepost=False,
+                progress=False
+            )
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
                 df.columns = ['open', 'high', 'low', 'close', 'volume']
@@ -105,12 +120,10 @@ def load_bars(ticker, _timeframe, start, end):
                 else:
                     df.index = df.index.tz_convert(ny_tz)
                 return df
-            else:
-                st.caption(f"yfinance: Keine Daten für {ticker} (15m)")
         except Exception as e:
             st.caption(f"yfinance-Fehler {ticker}: {str(e)}")
 
-    # Alpaca für andere Intervalle
+    # Alpaca für alle anderen Intervalle
     try:
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
@@ -124,17 +137,28 @@ def load_bars(ticker, _timeframe, start, end):
         if bars.empty:
             return pd.DataFrame()
 
-        # MultiIndex bereinigen
+        # MultiIndex sicher bereinigen
         if isinstance(bars.index, pd.MultiIndex):
-            bars = bars.reset_index(level=1, drop=True)
+            # Ticker als Level 1 → nur Timestamp behalten
+            bars = bars.xs(ticker, level=1, drop_level=True) if ticker in bars.index.levels[1] else bars.reset_index(level=1, drop=True)
 
-        # Timestamp als Index, falls nötig
-        if 'timestamp' in bars.columns:
-            bars = bars.set_index('timestamp')
+        # Falls Symbol als Spalte oder Index-Wert übrig
+        if 'symbol' in bars.columns:
+            bars = bars.drop(columns=['symbol'])
+        if bars.index.name == 'symbol' or bars.index.name == ticker:
+            bars = bars.reset_index(drop=True)
 
-        # Zu DatetimeIndex konvertieren
+        # Index zurücksetzen und Timestamp setzen
+        bars = bars.reset_index(drop=False)
+        timestamp_col = next((col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower()), bars.columns[0])
+        bars = bars.set_index(timestamp_col)
+
+        # DatetimeIndex sicherstellen
         if not isinstance(bars.index, pd.DatetimeIndex):
-            bars.index = pd.to_datetime(bars.index)
+            bars.index = pd.to_datetime(bars.index, errors='coerce')
+
+        # Ungültige Zeilen entfernen
+        bars = bars[bars.index.notnull()]
 
         # Zeitzone setzen/konvertieren
         if bars.index.tz is None:
@@ -144,7 +168,7 @@ def load_bars(ticker, _timeframe, start, end):
 
         return bars
     except Exception as e:
-        st.caption(f"Bars-Fehler {ticker}: {str(e)}")
+        st.caption(f"Alpaca-Fehler {ticker}: {str(e)}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -191,7 +215,6 @@ with tabs[0]:
         vol_avg = df["volume"].mean()
         vol_ratio = volume / vol_avg if vol_avg > 0 else 1.0
 
-        # Snapshot für Score
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
@@ -219,7 +242,6 @@ with tabs[0]:
         df_movers = pd.DataFrame(enhanced_movers)
         df_movers = df_movers.sort_values("Abs Gap", ascending=False).head(20)
 
-        # Empfehlung
         def get_recommendation(row):
             gap = row["Gap %"]
             score = row["Score"]
@@ -232,7 +254,6 @@ with tabs[0]:
 
         df_movers["Empfehlung"] = df_movers.apply(get_recommendation, axis=1)
 
-        # Farbliche Hervorhebung
         def highlight_row(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -246,7 +267,6 @@ with tabs[0]:
 
         st.dataframe(styled, width='stretch', hide_index=True)
 
-        # News nur für Top 5 laden
         st.subheader("News zu Top Early Movers")
         top_symbols = df_movers.head(5)["Symbol"].tolist()
         for sym in top_symbols:
@@ -308,12 +328,7 @@ with tabs[1]:
         elif score >= 50:
             rec = "Beobachten / Watchlist"
 
-        rows.append({
-            "Symbol": sym,
-            "Score": score,
-            "Bias": bias,
-            "Empfehlung": rec
-        })
+        rows.append({"Symbol": sym, "Score": score, "Bias": bias, "Empfehlung": rec})
 
     if rows:
         df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
@@ -331,7 +346,6 @@ with tabs[1]:
 
         st.dataframe(styled_scanner, width='stretch', hide_index=True)
 
-        # News nur für Top 5 laden
         st.subheader("News zu Top S&P 500 Kandidaten")
         top_symbols_scanner = df_scores.head(5)["Symbol"].tolist()
         for sym in top_symbols_scanner:
@@ -364,31 +378,35 @@ with tabs[2]:
 
     ticker = st.session_state.selected_ticker
     if ticker in daily_data and not daily_data[ticker].empty:
-        # Dynamische Startzeit je nach Zeitrahmen (größerer Bereich)
+        # Rückblick dynamisch setzen
         if timeframe_str == "15 Minuten":
-            start = now_ny - timedelta(days=10)   # 10 Tage → viele 15-Min-Kerzen
+            lookback_days = 30  # yfinance kann mehr, IEX nur wenig
         elif timeframe_str == "Täglich":
-            start = now_ny - timedelta(days=730)  # 2 Jahre
-        else:  # Wöchentlich
-            start = now_ny - timedelta(days=365*5)  # 5 Jahre
+            lookback_days = 180  # 6 Monate
+        else:
+            lookback_days = 365 * 2  # 2 Jahre für Wöchentlich
+
+        start = now_ny - timedelta(days=lookback_days)
 
         df = load_bars(ticker, timeframe, start, now_ny + timedelta(days=1))
+
         if df.empty:
-            st.warning("Keine Daten für diesen Zeitrahmen")
+            st.warning(
+                f"Keine Daten für '{timeframe_str}' ab {start.strftime('%Y-%m-%d')}. "
+                "Bei 15 Min oft nur wenige Tage verfügbar. Versuche 'Täglich'."
+            )
         else:
             df["ema20"] = ema(df["close"], 20)
             df["ema50"] = ema(df["close"], 50)
             df["RSI"] = rsi(df["close"])
             df["ATR"] = atr(df)
 
-            # MACD berechnen
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
             macd_line = ema_fast - ema_slow
             signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
-            # Divergenz-Punkte finden
             div = rsi_divergence(df)
             low_points = []
             if "Bullish" in div or "Bearish" in div:
@@ -435,7 +453,7 @@ with tabs[2]:
             fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            st.caption(f"Letzte Kerze: {df.index[-1]}")
+            st.caption(f"Daten von {df.index.min().strftime('%Y-%m-%d')} bis {df.index.max().strftime('%Y-%m-%d')} | {len(df)} Kerzen")
     else:
         st.info("Keine Daten für diesen Ticker")
 
