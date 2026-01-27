@@ -6,7 +6,7 @@ import pytz
 from datetime import datetime, timedelta
 import requests
 
-# yfinance optional (Fallback für längere 15-Min-Historie)
+# yfinance optional (Fallback für lange 15-Min-Historie)
 try:
     import yfinance as yf
     YFINANCE_AVAILABLE = True
@@ -151,7 +151,7 @@ def load_bars(ticker, _timeframe, start, end):
             bars = bars.reset_index(drop=True)
 
         bars = bars.reset_index(drop=False)
-        timestamp_col = next((col for col in bars.columns if 'time' in col.lower() or 'date' in col.lower()), bars.columns[0])
+        timestamp_col = 'timestamp'  # Explizit 'timestamp' verwenden
         bars = bars.set_index(timestamp_col)
 
         # Unix-Timestamp parsen (ms oder s)
@@ -346,6 +346,7 @@ with tabs[1]:
     if rows:
         df_scores = pd.DataFrame(rows).sort_values("Score", ascending=False).head(30)
 
+        # Farbliche Hervorhebung
         def highlight_scanner(row):
             rec = row["Empfehlung"]
             if "Kaufen" in rec:
@@ -387,7 +388,7 @@ with tabs[2]:
         "Wöchentlich": TimeFrame.Week
     }
 
-    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)  # Default Täglich
+    timeframe_str = st.selectbox("Zeitrahmen wählen", list(timeframe_options.keys()), index=1)
     timeframe = timeframe_options[timeframe_str]
 
     ticker = st.session_state.selected_ticker
@@ -429,19 +430,40 @@ with tabs[2]:
             fig = make_subplots(
                 rows=4, cols=1,
                 shared_xaxes=True,
-                vertical_spacing=0.06,
-                row_heights=[0.55, 0.15, 0.30, 0.2]
+                vertical_spacing=0.05,
+                row_heights=[0.5, 0.15, 0.15, 0.2]
             )
 
             fig.add_trace(go.Candlestick(x=df.index, open=df["open"], high=df["high"], low=df["low"], close=df["close"], name="OHLC"), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA 20", line=dict(color="#00BFFF")), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA 50", line=dict(color="#FF8C00")), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], name="EMA20"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], name="EMA50"), row=1, col=1)
+
             fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
+
             fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=3, col=1)
             fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
             fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-            fig.update_layout(height=800, title=f"{ticker} – Daily", hovermode="x unified")
+
+            fig.add_trace(go.Scatter(x=df.index, y=macd_line, name="MACD", line=dict(color="blue")), row=4, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=signal_line, name="Signal", line=dict(color="orange")), row=4, col=1)
+            fig.add_trace(go.Bar(x=df.index, y=histogram, name="Histogram", marker_color="grey"), row=4, col=1)
+
+            for idx in low_points:
+                fig.add_annotation(
+                    x=df.index[idx],
+                    y=df['low'].iloc[idx],
+                    text="Low",
+                    showarrow=True,
+                    arrowhead=1,
+                    arrowsize=1,
+                    arrowwidth=2,
+                    arrowcolor="red" if "Bearish" in div else "green",
+                    row=1, col=1
+                )
+
+            fig.update_layout(height=900, title=f"{ticker} – {timeframe_str}", hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
+
             st.caption(f"Letzte Kerze: {df.index[-1]}")
     else:
         st.info("Keine Daten für diesen Ticker")
@@ -483,7 +505,6 @@ with tabs[3]:
             bias = get_option_bias(snap, score)
             plan = generate_trade_plan(snap, score)
 
-            # Ampel-Logik visuell
             if score >= 70:
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
@@ -499,7 +520,6 @@ with tabs[3]:
             else:
                 st.info("Kein valider Trade-Plan")
 
-            # Zusatz-Indikatoren (neu)
             st.subheader("Zusatz-Indikatoren")
             col_div, col_macd = st.columns(2)
 
@@ -541,7 +561,6 @@ with tabs[3]:
                 for r in reasons_s:
                     st.write("• " + r)
 
-            # News für ausgewähltes Symbol laden
             st.subheader("News zu dieser Aktie")
             news = get_stock_news(ticker, alpha_vantage_key, limit=3)
             if news:
