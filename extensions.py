@@ -5,6 +5,10 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 
+# Wichtig: Imports der Indikator-Funktionen aus deinem bestehenden Projekt
+from logic.indicators import ema, rsi, atr
+from logic.additional_indicators import rsi_divergence, macd_info
+
 # Funktion für erweiterte Markt-Kontext (VIX, S&P Trend, etc.)
 def get_market_context():
     try:
