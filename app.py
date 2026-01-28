@@ -31,6 +31,8 @@ from logic.premarket_scanner import scan_early_movers
 from logic.decision_base import score_to_ampel
 from logic.additional_indicators import rsi_divergence, macd_info
 
+from extensions import show_extended_analysis  # Neu: Import der Erweiterungen
+
 st.set_page_config(page_title="Momentum Dashboard", layout="wide")
 
 client = StockHistoricalDataClient(
@@ -199,7 +201,8 @@ tabs = st.tabs([
     "🧠 S&P 500 Scanner",
     "📈 Chart Analyse",
     "🟢 Trading-Entscheidung",
-    "🗂 Legende"
+    "🗂 Legende",
+    "🧠 Erweiterte Analyse"  # Neu als Tab 5
 ])
 
 # ── Early Movers ────────────────────────────────────────────────────────────────
@@ -422,7 +425,7 @@ with tabs[2]:
             df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
             df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
 
-            # Fibonacci Retracement (basierend auf High/Low des gesamten Datensatzes)
+            # Fibonacci Retracement (basierend auf High/Low des Datensatzes)
             fib_high = df['high'].max()
             fib_low = df['low'].min()
             fib_levels = {
@@ -519,7 +522,6 @@ with tabs[2]:
         st.info("Keine Daten für diesen Ticker")
 
 # ── Trading-Entscheidung ────────────────────────────────────────────────────────
-# ── Trading-Entscheidung ────────────────────────────────────────────────────────
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
 
@@ -555,20 +557,26 @@ with tabs[3]:
             score = calculate_trend_score(snap)
             bias = get_option_bias(snap, score)
 
+            # Erweiterte Option-Bias-Empfehlung
+            option_recommendation = ""
+            if score >= 70:
+                option_recommendation = "Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend."
+                st.success(f"🟢 Stark Bullish (Score {score})")
+            elif score >= 40:
+                option_recommendation = "Neutral – Beobachten. Calls wenn RSI <50, Puts wenn RSI >70. Warte auf Crossover in MACD für Richtung."
+                st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
+            else:
+                option_recommendation = "Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche."
+                st.error(f"🔴 Bearish / meiden (Score {score})")
+
+            st.markdown(f"**Option Bias:** {bias}")
+            st.markdown(f"**Options-Empfehlung:** {option_recommendation}")
+
             plan = None
             try:
                 plan = generate_trade_plan(snap, score)
             except Exception as e:
                 st.caption(f"Fehler beim Erstellen des Trade-Plans: {str(e)}")
-
-            if score >= 70:
-                st.success(f"🟢 Stark Bullish (Score {score})")
-            elif score >= 40:
-                st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
-            else:
-                st.error(f"🔴 Bearish / meiden (Score {score})")
-
-            st.markdown(f"**Option Bias:** {bias}")
 
             if plan:
                 st.markdown("**Trade-Plan**")
@@ -717,3 +725,153 @@ with tabs[4]:
     """)
 
     st.info("Diese Erklärungen sind allgemein. Für detaillierte Strategien konsultiere immer einen Finanzberater.")
+
+# ── Erweiterte Analyse ────────────────────────────────────────────────────────────────
+with tabs[5]:
+    st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
+
+    if ticker in daily_data and not daily_data[ticker].empty:
+        df = daily_data[ticker].copy()
+        df_ind = df.copy()
+        df_ind["ema9"] = ema(df_ind["close"], 9)
+        df_ind["ema20"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
+        df_ind["rsi"] = rsi(df_ind["close"])
+        df_ind["atr"] = atr(df_ind)
+        df_ind.dropna(inplace=True)
+
+        if not df_ind.empty:
+            latest = df_ind.iloc[-1]
+            vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
+
+            snap = MarketSnapshot(
+                symbol=ticker,
+                price=float(latest["close"]),
+                rsi=float(latest["rsi"]),
+                ema9=float(latest["ema9"]),
+                ema20=float(latest["ema20"]),
+                ema50=float(latest["ema50"]),
+                atr=float(latest["atr"]),
+                volume_ratio=vol_ratio,
+                market_state=market_state
+            )
+
+            score = calculate_trend_score(snap)
+            bias = get_option_bias(snap, score)
+
+            # Erweiterte Option-Bias-Empfehlung
+            option_recommendation = ""
+            if score >= 70:
+                option_recommendation = "Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend."
+                st.success(f"🟢 Stark Bullish (Score {score})")
+            elif score >= 40:
+                option_recommendation = "Neutral – Beobachten. Calls wenn RSI <50, Puts wenn RSI >70. Warte auf Crossover in MACD für Richtung."
+                st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
+            else:
+                option_recommendation = "Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche."
+                st.error(f"🔴 Bearish / meiden (Score {score})")
+
+            st.markdown(f"**Option Bias:** {bias}")
+            st.markdown(f"**Options-Empfehlung:** {option_recommendation}")
+
+            plan = None
+            try:
+                plan = generate_trade_plan(snap, score)
+            except Exception as e:
+                st.caption(f"Fehler beim Erstellen des Trade-Plans: {str(e)}")
+
+            if plan:
+                st.markdown("**Trade-Plan**")
+                st.json(plan)
+            else:
+                st.info("Kein valider Trade-Plan verfügbar (Funktion lieferte None oder Fehler)")
+
+            st.subheader("Zusatz-Indikatoren")
+            col_div, col_macd = st.columns(2)
+
+            with col_div:
+                div = rsi_divergence(df_ind)
+                st.markdown("**RSI-Divergenz** (letzte 30 Bars)")
+                if "Bullish" in div:
+                    st.success(div)
+                elif "Bearish" in div:
+                    st.error(div)
+                else:
+                    st.info(div)
+
+            with col_macd:
+                macd = macd_info(df_ind)
+                st.markdown("**MACD (12,26,9)**")
+                if macd["MACD"] is not None:
+                    st.write(f"MACD: {macd['MACD']} | Signal: {macd['Signal']}")
+                    st.write(f"Histogramm: {macd['Histogramm']}")
+                    if "Bullish" in macd["Interpretation"]:
+                        st.success(macd["Interpretation"])
+                    elif "Bearish" in macd["Interpretation"]:
+                        st.error(macd["Interpretation"])
+                    else:
+                        st.info(macd["Interpretation"])
+                else:
+                    st.info(macd["text"])
+
+            col1, col2 = st.columns(2)
+            with col1:
+                ampel_d, reasons_d = decide_daytrade(snap)
+                st.markdown(f"**Daytrade:** {ampel_d}")
+                for r in reasons_d:
+                    st.write("• " + r)
+
+            with col2:
+                ampel_s, reasons_s = decide_swing(snap)
+                st.markdown(f"**Swing:** {ampel_s}")
+                for r in reasons_s:
+                    st.write("• " + r)
+
+            st.subheader("News zu dieser Aktie")
+            news = get_stock_news(ticker, alpha_vantage_key, limit=3)
+            if news:
+                for item in news:
+                    title = item.get("title", "No title")
+                    url = item.get("url", "#")
+                    sentiment = item.get("overall_sentiment_label", "Neutral")
+                    st.markdown(f"- [{title}]({url}) – Sentiment: **{sentiment}**")
+                st.markdown("---")
+            else:
+                st.info("Keine News verfügbar")
+
+        else:
+            st.warning("Keine Daten nach Berechnung")
+    else:
+        st.info("Wähle einen Ticker mit ausreichend Historie")
+
+# ── Legende ────────────────────────────────────────────────────────────────
+with tabs[4]:
+    st.subheader("🗂 Legende & Erklärungen")
+
+    st.markdown("""
+    Hier findest du Erklärungen zu den wichtigsten Begriffen und Werten im Dashboard. Jeder Begriff wird kurz beschrieben, mit einer Formel (falls zutreffend) und einem Beispiel.
+    """)
+
+    st.markdown("### Chart-Indikatoren")
+
+    st.markdown("""
+    - **OHLC (Open, High, Low, Close)**: Die vier Schlüsselwerte einer Candlestick-Kerze. 
+      - **Open**: Eröffnungspreis der Periode.
+      - **High**: Höchstpreis der Periode.
+      - **Low**: Tiefstpreis der Periode.
+      - **Close**: Schlusskurs der Periode.
+      - **Beispiel**: Eine Kerze mit Open=100, High=110, Low=95, Close=105 zeigt einen Aufwärtstrend in der Periode (grüne Kerze, Close > Open).
+    """)
+
+    st.markdown("""
+    - **EMA20 / EMA50 (Exponential Moving Average)**: Gewichteter gleitender Durchschnitt, der neuere Preise stärker berücksichtigt.
+      - **Formel**: EMA = (Close - EMA_vorher) * Multiplier + EMA_vorher, mit Multiplier = 2 / (Perioden + 1).
+      - **EMA20**: Kurzer EMA (20 Perioden) für kurzfristige Trends.
+      - **EMA50**: Längerer EMA (50 Perioden) für mittelfristige Trends.
+      - **Beispiel**: Wenn EMA20 über EMA50 kreuzt (Golden Cross), signalisiert das oft einen Aufwärtstrend. Bei AAPL könnte EMA20 bei 150 liegen, EMA50 bei 145 – Bullish Signal.
+    """)
+
+    st.markdown("""
+    - **BB Upper / BB Lower / BB Mid (Bollinger Bands)**: Volatilitäts-Indikator basierend auf gleitendem Durchschnitt und Standardabweichung.
+      - **BB Mid**: Einfacher gleitender Durchschnitt (meist 20 Perioden).
+      - **BB Upper**: BB Mid + (2 * Standard
