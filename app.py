@@ -519,6 +519,7 @@ with tabs[2]:
         st.info("Keine Daten für diesen Ticker")
 
 # ── Trading-Entscheidung ────────────────────────────────────────────────────────
+# ── Trading-Entscheidung ────────────────────────────────────────────────────────
 with tabs[3]:
     st.subheader("🟢 Trading-Entscheidung")
 
@@ -554,26 +555,26 @@ with tabs[3]:
             score = calculate_trend_score(snap)
             bias = get_option_bias(snap, score)
 
-            # Erweiterte Option-Bias-Empfehlung
-            option_recommendation = ""
+            plan = None
+            try:
+                plan = generate_trade_plan(snap, score)
+            except Exception as e:
+                st.caption(f"Fehler beim Erstellen des Trade-Plans: {str(e)}")
+
             if score >= 70:
-                option_recommendation = "Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend."
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
-                option_recommendation = "Neutral – Beobachte. Calls wenn RSI < 50, Puts wenn RSI > 70. Warte auf Crossover in MACD für Richtung."
                 st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
             else:
-                option_recommendation = "Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche."
                 st.error(f"🔴 Bearish / meiden (Score {score})")
 
             st.markdown(f"**Option Bias:** {bias}")
-            st.markdown(f"**Options-Empfehlung:** {option_recommendation}")
 
             if plan:
                 st.markdown("**Trade-Plan**")
                 st.json(plan)
             else:
-                st.info("Kein valider Trade-Plan")
+                st.info("Kein valider Trade-Plan verfügbar (Funktion lieferte None oder Fehler)")
 
             st.subheader("Zusatz-Indikatoren")
             col_div, col_macd = st.columns(2)
