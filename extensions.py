@@ -2,23 +2,30 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import yfinance as yf  # Für VIX, Market Cap, Beta, etc.
+import yfinance as yf
 from datetime import datetime, timedelta
 
 # Funktion für erweiterte Markt-Kontext (VIX, S&P Trend, etc.)
 def get_market_context():
     try:
         # VIX holen
-        vix = yf.download("^VIX", period="1d")
-        vix_level = vix['Close'].iloc[-1]
-        vix_trend = "steigend" if vix['Close'].pct_change().iloc[-1] > 0 else "fallend"
-        vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level < 20 else ">20 (hoch)"
+        vix = yf.download("^VIX", period="5d", progress=False)
+        if not vix.empty:
+            vix_level = vix['Close'].iloc[-1]
+            vix_change = vix['Close'].pct_change().iloc[-1]
+            vix_trend = "steigend" if vix_change > 0 else "fallend" if vix_change < 0 else "seitwärts"
+            vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
+        else:
+            vix_level = vix_trend = vix_category = None
 
         # S&P 500 Trend
-        sp500 = yf.download("^GSPC", period="6mo")
-        sp500['EMA20'] = sp500['Close'].ewm(span=20, adjust=False).mean()
-        sp500['EMA50'] = sp500['Close'].ewm(span=50, adjust=False).mean()
-        sp500_trend = "über EMA20/50" if sp500['Close'].iloc[-1] > sp500['EMA20'].iloc[-1] and sp500['Close'].iloc[-1] > sp500['EMA50'].iloc[-1] else "unter EMA20/50"
+        sp500 = yf.download("^GSPC", period="6mo", progress=False)
+        if not sp500.empty:
+            sp500['EMA20'] = sp500['Close'].ewm(span=20, adjust=False).mean()
+            sp500['EMA50'] = sp500['Close'].ewm(span=50, adjust=False).mean()
+            sp500_trend = "über EMA20/50" if sp500['Close'].iloc[-1] > sp500['EMA20'].iloc[-1] and sp500['Close'].iloc[-1] > sp500['EMA50'].iloc[-1] else "unter EMA20/50"
+        else:
+            sp500_trend = None
 
         # Makro-Termine (statisch – erweitere bei Bedarf)
         macro_events = [
@@ -28,7 +35,8 @@ def get_market_context():
         ]
 
         return vix_level, vix_trend, vix_category, sp500_trend, macro_events
-    except:
+    except Exception as e:
+        st.caption(f"Markt-Kontext konnte nicht geladen werden: {str(e)}")
         return None, None, None, None, []
 
 # Funktion für erweiterte Aktien-Daten (Beta, Market Cap, etc.)
@@ -36,38 +44,45 @@ def get_stock_fundamentals(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        market_cap = info.get('marketCap', 'N/A') / 1e9 if info.get('marketCap') else 'N/A'
-        beta = info.get('beta', 'N/A')
+        market_cap = info.get('marketCap', None)
+        if market_cap is not None:
+            market_cap = round(market_cap / 1e9, 2)  # in Mrd. USD
+        beta = info.get('beta', None)
         sector = info.get('sector', 'N/A')
-        short_interest = info.get('shortPercentOfFloat', 'N/A') * 100 if info.get('shortPercentOfFloat') else 'N/A'
+        short_interest = info.get('shortPercentOfFloat', None)
+        if short_interest is not None:
+            short_interest = round(short_interest * 100, 2)
         return market_cap, beta, sector, short_interest
-    except:
-        return 'N/A', 'N/A', 'N/A', 'N/A'
+    except Exception as e:
+        st.caption(f"Fundamentaldaten für {ticker} nicht verfügbar: {str(e)}")
+        return None, None, 'N/A', None
 
 # Funktion für Volumen & Struktur (RVOL)
 def get_volume_structure(df):
     if df.empty:
-        return 'N/A'
+        return None
     avg_volume = df['volume'].mean()
     latest_volume = df['volume'].iloc[-1]
-    rvol = latest_volume / avg_volume if avg_volume > 0 else 1.0
+    rvol = latest_volume / avg_volume if avg_volume > 0 else None
     return rvol
 
 # Funktion für Risiko- & Trade-Planung (Positionsgröße vorschlagen)
 def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
-    if snap.atr == 0:
-        return 'N/A'
+    if snap.atr == 0 or snap.atr is None:
+        return None
     position_size = (capital * risk_per_trade) / snap.atr
-    return round(position_size, 2)
+    return round(position_size, 0)
 
 # Funktion für erweiterte Option-Bias (Call/Put-Empfehlung)
 def get_extended_option_bias(snap, score, vix_level):
     if score >= 70:
-        return "Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend. Bei VIX <20: Gute Vega-Chance."
+        vix_info = f" (VIX {vix_level:.1f} – ruhiger Markt, Calls bevorzugt)" if vix_level else ""
+        return f"Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend{vix_info}."
     elif score >= 40:
-        return "Neutral – Beobachte. Calls wenn RSI <50, Puts wenn RSI >70. Warte auf MACD-Crossover. Bei VIX 15-20: Spreads bevorzugen."
+        return "Neutral – Beobachte. Calls wenn RSI <50, Puts wenn RSI >70. Warte auf MACD-Crossover für Richtung."
     else:
-        return "Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche. Bei VIX >20: Strangles in Betracht."
+        vix_info = f" (VIX {vix_level:.1f} – höhere Volatilität, Puts bevorzugt)" if vix_level else ""
+        return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
 # Funktion für erweiterten Chart mit Fibonacci
 def get_extended_chart(df, ticker, timeframe_str):
@@ -159,72 +174,74 @@ def get_extended_chart(df, ticker, timeframe_str):
 
     fig.update_layout(
         height=700,
-        title=f"{ticker} – {timeframe_str} ({len(df)} Kerzen)",
+        title=f"{ticker} – Erweiterter Chart ({timeframe_str})",
         hovermode="x unified",
         xaxis_rangeslider_visible=True,
-        xaxis=dict(
-            autorange=True,
-            rangeselector=dict(
-                buttons=list([
-                    dict(count=1, label="1 Tag", step="day", stepmode="backward"),
-                    dict(count=3, label="3 Tage", step="day", stepmode="backward"),
-                    dict(count=7, label="1 Woche", step="day", stepmode="backward"),
-                    dict(step="all")
-                ])
-            )
-        ),
+        xaxis=dict(autorange=True),
         yaxis=dict(autorange=True)
     )
 
     return fig
 
-# Funktion für den gesamten Inhalt des neuen Tabs
+# Hauptfunktion für den neuen Tab
 def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
 
+    if ticker is None or snap is None or df.empty:
+        st.warning("Nicht alle benötigten Daten verfügbar. Wähle einen Ticker und warte auf Chart-Laden.")
+        return
+
     # 1. Markt- & Makro-Kontext
-    vix_level, vix_trend, vix_category, sp500_trend, macro_events = get_market_context()
     st.markdown("**1. Markt- & Makro-Kontext**")
-    st.write(f"VIX-Level: {vix_level:.2f} ({vix_trend}, Kategorie: {vix_category})")
-    st.write(f"S&P 500 Trend: {sp500_trend}")
-    st.write("Makro-Termine:")
+    vix_level, vix_trend, vix_category, sp500_trend, macro_events = get_market_context()
+
+    if vix_level is not None:
+        st.write(f"VIX-Level: **{vix_level:.2f}** ({vix_trend}, Kategorie: {vix_category})")
+    else:
+        st.write("VIX-Level: **Nicht verfügbar** (yfinance-Fehler oder Netzwerkproblem)")
+
+    if sp500_trend is not None:
+        st.write(f"S&P 500 Trend: **{sp500_trend}**")
+    else:
+        st.write("S&P 500 Trend: **Nicht verfügbar**")
+
+    st.write("Nächste Makro-Termine:")
     for event in macro_events:
         st.write(f"- {event}")
 
-    # 2. Aktien-spezifische Daten – Technisch
-    st.markdown("**2. Aktien-spezifische Daten – Technisch**")
-    st.write("Trend & Struktur: Multi-Timeframe-Analyse (aus Chart)")
-
-    # 3. Aktien-spezifische Daten – Fundamental
-    st.markdown("**3. Aktien-spezifische Daten – Fundamental**")
+    # 2. Aktien-spezifische Daten – Fundamental
+    st.markdown("**2. Aktien-spezifische Daten – Fundamental**")
     market_cap, beta, sector, short_interest = get_stock_fundamentals(ticker)
-    st.write(f"Market Cap: {market_cap} Mrd. USD")
-    st.write(f"Beta: {beta}")
-    st.write(f"Sektor: {sector}")
-    st.write(f"Short Interest: {short_interest}%")
+    st.write(f"Market Cap: **{market_cap} Mrd. USD**" if market_cap else "Market Cap: N/A")
+    st.write(f"Beta: **{beta}**" if beta else "Beta: N/A")
+    st.write(f"Sektor: **{sector}**")
+    st.write(f"Short Interest: **{short_interest}%**" if short_interest else "Short Interest: N/A")
 
-    # 4. Volumen & Marktstruktur
-    st.markdown("**4. Volumen & Marktstruktur**")
+    # 3. Volumen & Marktstruktur
+    st.markdown("**3. Volumen & Marktstruktur**")
     rvol = get_volume_structure(df)
-    st.write(f"Relatives Volumen (RVOL): {rvol:.2f}")
+    if rvol is not None:
+        st.write(f"Relatives Volumen (RVOL): **{rvol:.2f}**")
+    else:
+        st.write("Relatives Volumen: **Nicht berechenbar** (Daten unvollständig)")
 
-    # 5. Risiko- & Trade-Planung
-    st.markdown("**5. Risiko- & Trade-Planung**")
+    # 4. Risiko- & Trade-Planung
+    st.markdown("**4. Risiko- & Trade-Planung**")
     position_size = get_risk_management(snap)
-    st.write(f"Vorgeschlagene Positionsgröße (bei 100k Kapital, 1% Risiko): {position_size} Aktien")
+    if position_size is not None:
+        st.write(f"Vorgeschlagene Positionsgröße (bei 100k Kapital, 1% Risiko): **{position_size} Aktien**")
+    else:
+        st.write("Positionsgröße: **Nicht berechenbar** (ATR = 0 oder fehlend)")
 
-    # 6. Options-spezifische Daten
-    st.markdown("**6. Options-spezifische Daten**")
-    # IV simulieren (in echt mit alpaca-py holen)
-    iv = 25.0  # Platzhalter – erweitere mit realen Daten
-    st.write(f"Implizite Volatilität (IV): {iv}% (Percentile: 40%)")
-
-    # 7. Strategie-Entscheidung
-    st.markdown("**7. Strategie-Entscheidung**")
+    # 5. Erweiterte Option-Bias
+    st.markdown("**5. Erweiterte Options-Empfehlung**")
     extended_bias = get_extended_option_bias(snap, score, vix_level)
     st.write(extended_bias)
 
-    # Erweiterter Chart mit Fibonacci
+    # 6. Erweiterter Chart mit Fibonacci
+    st.markdown("**6. Erweiterter Chart**")
     fig = get_extended_chart(df, ticker, timeframe_str)
     if fig:
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("Erweiterter Chart konnte nicht erstellt werden.")
