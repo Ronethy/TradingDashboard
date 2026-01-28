@@ -199,7 +199,7 @@ tabs = st.tabs([
     "🧠 S&P 500 Scanner",
     "📈 Chart Analyse",
     "🟢 Trading-Entscheidung",
-    "🗂 Legende"  # Neues Tab für Erklärungen
+    "🗂 Legende"
 ])
 
 # ── Early Movers ────────────────────────────────────────────────────────────────
@@ -301,7 +301,7 @@ with tabs[1]:
         df_ind = df.copy()
         df_ind["ema9"] = ema(df_ind["close"], 9)
         df_ind["ema20"] = ema(df_ind["close"], 20)
-        df_ind["ema50"] = ema(df_ind["close"], 20)
+        df_ind["ema50"] = ema(df_ind["close"], 50)
         df_ind["rsi"] = rsi(df_ind["close"])
         df_ind["atr"] = atr(df_ind)
         df_ind.dropna(inplace=True)
@@ -422,6 +422,18 @@ with tabs[2]:
             df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
             df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
 
+            # Fibonacci Retracement (basierend auf High/Low des gesamten Datensatzes)
+            fib_high = df['high'].max()
+            fib_low = df['low'].min()
+            fib_levels = {
+                '0%': fib_low,
+                '23.6%': fib_low + 0.236 * (fib_high - fib_low),
+                '38.2%': fib_low + 0.382 * (fib_high - fib_low),
+                '50%': fib_low + 0.5 * (fib_high - fib_low),
+                '61.8%': fib_low + 0.618 * (fib_high - fib_low),
+                '100%': fib_high
+            }
+
             # MACD
             ema_fast = df['close'].ewm(span=12, adjust=False).mean()
             ema_slow = df['close'].ewm(span=26, adjust=False).mean()
@@ -453,6 +465,10 @@ with tabs[2]:
             fig.add_trace(go.Scatter(x=df.index, y=df["bb_upper"], name="BB Upper", line=dict(color="rgba(255,0,0,0.5)", dash="dash")), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
+
+            # Fibonacci Retracement Levels als horizontale Linien
+            for level, value in fib_levels.items():
+                fig.add_hline(y=value, line_dash="dot", line_color="purple", annotation_text=level, row=1, col=1)
 
             fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
 
@@ -537,16 +553,21 @@ with tabs[3]:
 
             score = calculate_trend_score(snap)
             bias = get_option_bias(snap, score)
-            plan = generate_trade_plan(snap, score)
 
+            # Erweiterte Option-Bias-Empfehlung
+            option_recommendation = ""
             if score >= 70:
+                option_recommendation = "Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend."
                 st.success(f"🟢 Stark Bullish (Score {score})")
             elif score >= 40:
+                option_recommendation = "Neutral – Beobachte. Calls wenn RSI < 50, Puts wenn RSI > 70. Warte auf Crossover in MACD für Richtung."
                 st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
             else:
+                option_recommendation = "Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche."
                 st.error(f"🔴 Bearish / meiden (Score {score})")
 
             st.markdown(f"**Option Bias:** {bias}")
+            st.markdown(f"**Options-Empfehlung:** {option_recommendation}")
 
             if plan:
                 st.markdown("**Trade-Plan**")
@@ -648,6 +669,12 @@ with tabs[4]:
     """)
 
     st.markdown("""
+    - **Fibonacci Retracement**: Werkzeug zur Identifikation potenzieller Unterstützungs- und Widerstandslevels basierend auf Fibonacci-Zahlen.
+      - **Levels**: 0%, 23.6%, 38.2%, 50%, 61.8%, 100% (basierend auf High/Low des Zeitraums).
+      - **Beispiel**: Bei einem Aufwärtstrend von Low 100 zu High 200 liegt 38.2% bei 161.6 – potenzielles Pullback-Level für Einstieg.
+    """)
+
+    st.markdown("""
     - **Volume**: Das Handelsvolumen (Anzahl gehandelter Aktien) in der Periode.
       - **Beispiel**: Hohes Volume bei Aufwärtstrend (z. B. 10 Mio. Aktien) bestätigt Stärke, niedriges Volume (z. B. 2 Mio.) könnte schwachen Trend bedeuten.
     """)
@@ -666,7 +693,8 @@ with tabs[4]:
       - **Beispiel**: Wenn MACD über Signal kreuzt (Bullish Crossover), Kaufsignal. Bei META MACD 2.5, Signal 2.0, Histogram positiv: Aufwärtstrend.
     """)
 
-    st.markdown("### Weitere Werte im Dashboard")
+    st.markdown("### Trading-Entscheidung")
+
     st.markdown("""
     - **Score**: Eigener Trend-Score (0–100) basierend auf RSI, EMAs, Volume etc. Höher = bullischer Trend.
       - **Beispiel**: Score 80: Stark bullisch, gute Long-Chance.
@@ -678,118 +706,13 @@ with tabs[4]:
     """)
 
     st.markdown("""
+    - **Options-Empfehlung**: Erweiterte Empfehlung für Calls (Kaufoptionen) oder Puts (Verkaufsoptionen).
+      - **Beispiel**: Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg.
+    """)
+
+    st.markdown("""
     - **Ampel (Daytrade/Swing)**: Grün = Go, Gelb = Vorsicht, Rot = Vermeiden.
       - **Beispiel**: Grün für Daytrade: Guter Einstieg für intraday-Positionen.
     """)
 
     st.info("Diese Erklärungen sind allgemein. Für detaillierte Strategien konsultiere immer einen Finanzberater.")
-
-# ── Trading-Entscheidung ────────────────────────────────────────────────────────
-with tabs[3]:
-    st.subheader("🟢 Trading-Entscheidung")
-
-    ticker = st.session_state.selected_ticker
-    st.write(f"Ausgewählte Aktie: **{ticker}**")
-
-    if ticker in daily_data and len(daily_data[ticker]) >= 20:
-        df = daily_data[ticker].copy()
-        df_ind = df.copy()
-        df_ind["ema9"] = ema(df_ind["close"], 9)
-        df_ind["ema20"] = ema(df_ind["close"], 20)
-        df_ind["ema50"] = ema(df_ind["close"], 50)
-        df_ind["rsi"] = rsi(df_ind["close"])
-        df_ind["atr"] = atr(df_ind)
-        df_ind.dropna(inplace=True)
-
-        if not df_ind.empty:
-            latest = df_ind.iloc[-1]
-            vol_ratio = latest["volume"] / df_ind["volume"].mean() if df_ind["volume"].mean() > 0 else 1.0
-
-            snap = MarketSnapshot(
-                symbol=ticker,
-                price=float(latest["close"]),
-                rsi=float(latest["rsi"]),
-                ema9=float(latest["ema9"]),
-                ema20=float(latest["ema20"]),
-                ema50=float(latest["ema50"]),
-                atr=float(latest["atr"]),
-                volume_ratio=vol_ratio,
-                market_state=market_state
-            )
-
-            score = calculate_trend_score(snap)
-            bias = get_option_bias(snap, score)
-            plan = generate_trade_plan(snap, score)
-
-            if score >= 70:
-                st.success(f"🟢 Stark Bullish (Score {score})")
-            elif score >= 40:
-                st.warning(f"🟡 Neutral / vorsichtig (Score {score})")
-            else:
-                st.error(f"🔴 Bearish / meiden (Score {score})")
-
-            st.markdown(f"**Option Bias:** {bias}")
-
-            if plan:
-                st.markdown("**Trade-Plan**")
-                st.json(plan)
-            else:
-                st.info("Kein valider Trade-Plan")
-
-            st.subheader("Zusatz-Indikatoren")
-            col_div, col_macd = st.columns(2)
-
-            with col_div:
-                div = rsi_divergence(df_ind)
-                st.markdown("**RSI-Divergenz** (letzte 30 Bars)")
-                if "Bullish" in div:
-                    st.success(div)
-                elif "Bearish" in div:
-                    st.error(div)
-                else:
-                    st.info(div)
-
-            with col_macd:
-                macd = macd_info(df_ind)
-                st.markdown("**MACD (12,26,9)**")
-                if macd["MACD"] is not None:
-                    st.write(f"MACD: {macd['MACD']} | Signal: {macd['Signal']}")
-                    st.write(f"Histogramm: {macd['Histogramm']}")
-                    if "Bullish" in macd["Interpretation"]:
-                        st.success(macd["Interpretation"])
-                    elif "Bearish" in macd["Interpretation"]:
-                        st.error(macd["Interpretation"])
-                    else:
-                        st.info(macd["Interpretation"])
-                else:
-                    st.info(macd["text"])
-
-            col1, col2 = st.columns(2)
-            with col1:
-                ampel_d, reasons_d = decide_daytrade(snap)
-                st.markdown(f"**Daytrade:** {ampel_d}")
-                for r in reasons_d:
-                    st.write("• " + r)
-
-            with col2:
-                ampel_s, reasons_s = decide_swing(snap)
-                st.markdown(f"**Swing:** {ampel_s}")
-                for r in reasons_s:
-                    st.write("• " + r)
-
-            st.subheader("News zu dieser Aktie")
-            news = get_stock_news(ticker, alpha_vantage_key, limit=3)
-            if news:
-                for item in news:
-                    title = item.get("title", "No title")
-                    url = item.get("url", "#")
-                    sentiment = item.get("overall_sentiment_label", "Neutral")
-                    st.markdown(f"- [{title}]({url}) – Sentiment: **{sentiment}**")
-                st.markdown("---")
-            else:
-                st.info("Keine News verfügbar")
-
-        else:
-            st.warning("Keine Daten nach Berechnung")
-    else:
-        st.info("Wähle einen Ticker mit ausreichend Historie")
