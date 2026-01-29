@@ -10,12 +10,15 @@ from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Markt- & Makro-Kontext (mit Cache & Robustheit)
+# Markt- & Makro-Kontext (stabilisiert mit Cache, Timeout & Fallback)
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)  # 5 Min Cache
+@st.cache_data(ttl=900)  # 15 Min Cache – länger halten für Stabilität
 def get_market_context():
     try:
-        vix = yf.download("^VIX", period="5d", progress=False, timeout=10)
+        # VIX mit Timeout & Fallback-Ticker
+        vix = yf.download("^VIX", period="5d", progress=False, timeout=15)
+        if vix.empty:
+            vix = yf.download("VIX", period="5d", progress=False, timeout=15)  # Alternativ-Ticker
         if not vix.empty and len(vix) >= 2:
             vix_level = float(vix['Close'].iloc[-1])
             vix_change = vix['Close'].pct_change().iloc[-1]
@@ -23,48 +26,57 @@ def get_market_context():
             vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
         else:
             vix_level = vix_trend = vix_category = None
+    except Exception as e:
+        vix_level = vix_trend = vix_category = None
+        st.caption(f"VIX-Daten konnten nicht geladen werden: {str(e)}")
 
-        sp500 = yf.download("^GSPC", period="6mo", progress=False, timeout=10)
+    # S&P 500
+    try:
+        sp500 = yf.download("^GSPC", period="6mo", progress=False, timeout=15)
         sp500_trend = None
         if not sp500.empty:
             ema20 = sp500['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
             ema50 = sp500['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
             sp500_trend = "über EMA20/50" if sp500['Close'].iloc[-1] > ema20 and sp500['Close'].iloc[-1] > ema50 else "unter EMA20/50"
+    except:
+        sp500_trend = None
 
-        nasdaq = yf.download("^IXIC", period="6mo", progress=False, timeout=10)
+    # Nasdaq
+    try:
+        nasdaq = yf.download("^IXIC", period="6mo", progress=False, timeout=15)
         nasdaq_trend = None
         if not nasdaq.empty:
             ema20 = nasdaq['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
             ema50 = nasdaq['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
             nasdaq_trend = "über EMA20/50" if nasdaq['Close'].iloc[-1] > ema20 and nasdaq['Close'].iloc[-1] > ema50 else "unter EMA20/50"
+    except:
+        nasdaq_trend = None
 
-        adv_dec_proxy = "positiv" if not sp500.empty and sp500['Close'].pct_change().mean() > 0 else "negativ"
-        new_highs_lows = "mehr Highs" if not sp500.empty and (sp500['Close'] == sp500['Close'].rolling(252).max()).sum() > (sp500['Close'] == sp500['Close'].rolling(252).min()).sum() else "mehr Lows"
+    # Proxy-Werte
+    adv_dec_proxy = "positiv" if not sp500.empty and sp500['Close'].pct_change().mean() > 0 else "negativ" if not sp500.empty else "N/A"
+    new_highs_lows = "mehr Highs" if not sp500.empty and (sp500['Close'] == sp500['Close'].rolling(252).max()).sum() > (sp500['Close'] == sp500['Close'].rolling(252).min()).sum() else "mehr Lows" if not sp500.empty else "N/A"
 
-        macro_events = [
-            "Fed-Zinsentscheid: 4.–5. Februar 2026",
-            "CPI/PPI: 11. Februar 2026",
-            "Non-Farm Payrolls: 6. Februar 2026"
-        ]
+    macro_events = [
+        "Fed-Zinsentscheid: 4.–5. Februar 2026",
+        "CPI/PPI: 11. Februar 2026",
+        "Non-Farm Payrolls: 6. Februar 2026"
+    ]
 
-        return {
-            "vix_level": vix_level,
-            "vix_trend": vix_trend,
-            "vix_category": vix_category,
-            "sp500_trend": sp500_trend,
-            "nasdaq_trend": nasdaq_trend,
-            "adv_dec_proxy": adv_dec_proxy,
-            "new_highs_lows": new_highs_lows,
-            "macro_events": macro_events
-        }
-    except Exception as e:
-        st.caption(f"Markt-Kontext konnte nicht geladen werden: {str(e)}")
-        return {}
+    return {
+        "vix_level": vix_level,
+        "vix_trend": vix_trend,
+        "vix_category": vix_category,
+        "sp500_trend": sp500_trend,
+        "nasdaq_trend": nasdaq_trend,
+        "adv_dec_proxy": adv_dec_proxy,
+        "new_highs_lows": new_highs_lows,
+        "macro_events": macro_events
+    }
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Fundamental-Daten (mit Cache)
+# Fundamental-Daten
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=600)  # 10 Min Cache
+@st.cache_data(ttl=1800)  # 30 Min Cache
 def get_stock_fundamentals(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -80,23 +92,32 @@ def get_stock_fundamentals(ticker):
         return None, None, 'N/A', None, None, None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Earnings-Info (stabiler über earnings_dates)
+# Earnings-Info (stabilisiert)
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)  # 1 Stunde Cache – Earnings ändern sich selten
+@st.cache_data(ttl=3600)  # 1 Stunde Cache
 def get_earnings_info(ticker):
     try:
         stock = yf.Ticker(ticker)
+        # Primär: earnings_dates
         earnings = stock.earnings_dates
         if earnings is not None and not earnings.empty:
+            # Nächstes Datum (meist erstes in der Liste)
             next_earnings = earnings.index[0].strftime('%Y-%m-%d') if len(earnings) > 0 else 'N/A'
             surprises = earnings['Surprise(%)'].dropna()
             avg_move = round(surprises.mean(), 2) if not surprises.empty else 'N/A'
         else:
-            next_earnings = avg_move = 'N/A'
+            # Fallback: quarterly_earnings
+            q_earnings = stock.quarterly_earnings
+            if not q_earnings.empty:
+                avg_move = round(q_earnings['Earnings'].pct_change().mean() * 100, 2)
+            else:
+                avg_move = 'N/A'
+            next_earnings = 'N/A (kein Datum gefunden)'
 
-        guidance = "positiv" if isinstance(avg_move, float) and avg_move > 0 else "negativ" if isinstance(avg_move, float) and avg_move < 0 else "neutral"
+        guidance = "positiv" if isinstance(avg_move, (int, float)) and avg_move > 0 else "negativ" if isinstance(avg_move, (int, float)) and avg_move < 0 else "neutral"
         return next_earnings, avg_move, guidance
-    except:
+    except Exception as e:
+        st.caption(f"Earnings für {ticker} nicht geladen: {str(e)}")
         return 'N/A', 'N/A', 'N/A'
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -112,7 +133,8 @@ def get_volume_structure(df):
     df['breakout'] = (df['close'] > df['high'].shift(1)) & (df['volume'] > avg_volume * 1.5)
     breakout_vol = "hoch" if df['breakout'].any() else "normal/niedrig"
 
-    pullback_vol = "niedrig" if df['volume'][(df['close'] < df['close'].shift(1))].mean() < avg_volume else "hoch/normal"
+    pullback_mask = df['close'] < df['close'].shift(1)
+    pullback_vol = "niedrig" if pullback_mask.any() and df['volume'][pullback_mask].mean() < avg_volume else "hoch/normal"
 
     return rvol, breakout_vol, pullback_vol
 
@@ -128,22 +150,24 @@ def get_gap_levels(df):
     if len(df) < 2:
         return None
     gaps = df['open'] - df['close'].shift(1)
-    # ATR lokal berechnen, falls fehlt
+    # ATR sicher berechnen
     if 'ATR' not in df.columns:
         df['ATR'] = atr(df)
-    atr_mean = df['ATR'].mean()
+    atr_mean = df['ATR'].mean() if not df['ATR'].empty else 0
     significant_gaps = gaps[gaps.abs() > atr_mean]
     return round(significant_gaps.iloc[-1], 2) if not significant_gaps.empty else None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Sektor-Stärke (vs. S&P 500)
+# Sektor-Stärke
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def get_sector_strength(sector):
     try:
         sector_etf_map = {
             'Technology': '^IXIC',
-            'Consumer Cyclical': '^DJUSCY',
+            'Consumer Cyclical': 'XLY',  # SPDR Consumer Discretionary ETF – stabiler als ^DJUSCY
+            'Consumer Defensive': 'XLP',
+            'Financial Services': 'XLF',
             # Füge bei Bedarf mehr hinzu
         }
         etf = sector_etf_map.get(sector, '^GSPC')
@@ -155,8 +179,12 @@ def get_sector_strength(sector):
 
         if sector_return is None or sp500_return is None:
             return "N/A"
-        strength = "stark (outperforms S&P)" if sector_return > sp500_return else "schwach (underperforms S&P)" if sector_return < sp500_return else "gleichlaufend"
-        return strength
+        if sector_return > sp500_return + 0.5:
+            return "stark (outperforms S&P)"
+        elif sector_return < sp500_return - 0.5:
+            return "schwach (underperforms S&P)"
+        else:
+            return "gleichlaufend"
     except:
         return "N/A"
 
@@ -167,7 +195,7 @@ def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
     if snap.atr == 0 or snap.atr is None:
         return None, None
     position_size = (capital * risk_per_trade) / snap.atr
-    rr = 2.0  # Minimum R:R
+    rr = 2.0  # Mindestens 2:1
     return round(position_size, 0), rr
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -184,7 +212,7 @@ def get_extended_option_bias(snap, score, vix_level):
         return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Erweiterter Chart (unverändert, aber mit ATR/Indikator-Check)
+# Erweiterter Chart
 # ────────────────────────────────────────────────────────────────────────────────
 def get_extended_chart(df, ticker, timeframe_str):
     if df.empty:
