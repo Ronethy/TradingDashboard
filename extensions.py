@@ -127,7 +127,7 @@ def get_gap_levels(df):
     if len(df) < 2:
         return None
     gaps = df['open'] - df['close'].shift(1)
-    gap_levels = gaps[gaps.abs() > df['atr'].mean()]
+    gap_levels = gaps[gaps.abs() > df['ATR'].mean()]
     return gap_levels.iloc[-1] if not gap_levels.empty else None
 
 def get_sector_strength(sector):
