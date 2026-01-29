@@ -10,9 +10,9 @@ from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Markt- & Makro-Kontext (robust gegen leere/NaN-Daten)
+# Markt- & Makro-Kontext (robust & mit Fallbacks)
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800)  # 30 Min Cache
+@st.cache_data(ttl=1800)  # 30 Minuten Cache
 def get_market_context():
     market_data = {
         "vix_level": None,
@@ -29,7 +29,7 @@ def get_market_context():
         ]
     }
 
-    # VIX
+    # VIX mit Fallback-Ticker
     try:
         vix = yf.download("^VIX", period="5d", progress=False, timeout=15)
         if vix.empty or len(vix) < 2:
@@ -41,7 +41,7 @@ def get_market_context():
             market_data["vix_trend"] = "steigend" if vix_change > 0 else "fallend" if vix_change < 0 else "seitwärts"
             market_data["vix_category"] = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
     except Exception as e:
-        st.caption(f"VIX-Laden fehlgeschlagen: {str(e)}")
+        st.caption(f"VIX-Daten konnten nicht geladen werden: {str(e)}")
 
     # S&P 500
     try:
@@ -63,7 +63,7 @@ def get_market_context():
     except:
         pass
 
-    # Advance/Decline Proxy
+    # Advance/Decline Proxy – sehr robust gegen NaN
     if 'sp500' in locals() and not sp500.empty and len(sp500) >= 2:
         try:
             pct_changes = sp500['Close'].pct_change().dropna()
@@ -77,7 +77,7 @@ def get_market_context():
         except:
             pass
 
-    # New Highs vs Lows
+    # New Highs vs. Lows Proxy
     if 'sp500' in locals() and not sp500.empty and len(sp500) >= 252:
         try:
             rolling_max = sp500['Close'].rolling(252).max()
@@ -109,7 +109,7 @@ def get_stock_fundamentals(ticker):
         return None, None, 'N/A', None, None, None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Earnings-Info
+# Earnings-Info (stabiler Fallback)
 # ────────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_earnings_info(ticker):
@@ -226,12 +226,12 @@ def get_extended_option_bias(snap, score, vix_level):
         return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Erweiterter Chart – feste 4-Wochen-Ansicht (Daily) mit sichtbaren Fib-Levels
+# Erweiterter Chart – letzte ~4 Wochen (Daily) mit sichtbaren Fib-Levels
 # ────────────────────────────────────────────────────────────────────────────────
 def get_extended_chart(ticker):
     try:
         end = datetime.now()
-        start = end - timedelta(days=40)
+        start = end - timedelta(days=40)  # ~4 Wochen + Puffer
         df = yf.download(ticker, start=start, end=end, interval="1d", progress=False)
         
         if df.empty or len(df) < 5:
@@ -281,7 +281,7 @@ def get_extended_chart(ticker):
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
-        # Fibonacci – auffällig gemacht
+        # Fibonacci – sehr sichtbar gemacht
         if len(df) >= 5:
             fib_high = df['high'].max()
             fib_low = df['low'].min()
@@ -303,8 +303,8 @@ def get_extended_chart(ticker):
                         y=level_price,
                         line_dash="dot",
                         line_color="purple",
-                        line_width=2,
-                        annotation_text=f"{level_name} ({level_price:.2f})",
+                        line_width=2.5,  # dicker
+                        annotation_text=f"{level_name}  {level_price:.2f}",
                         annotation_position="right",
                         annotation_font_size=12,
                         annotation_font_color="purple",
@@ -412,7 +412,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     else:
         st.write("Volumen-Daten: **Nicht verfügbar** (df fehlt)")
 
-    # 4. Risiko- & Trade-Planung – Kleinanleger-Modus
+    # 4. Risiko- & Trade-Planung – Kleinanleger-Modus mit Erklärung
     st.markdown("**4. Risiko- & Trade-Planung (Kleinanleger-Modus)**")
 
     capital_input = st.number_input(
@@ -421,7 +421,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
         max_value=10000.0,
         value=500.0,
         step=50.0,
-        help="Für Kleinanleger empfohlen: 100–1000 €"
+        help="Realistisch für Kleinanleger: 100–1000 €"
     )
 
     risk_percent = st.slider(
@@ -440,11 +440,11 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
         st.write(f"Risiko pro Trade: **{risk_amount:.2f} €** ({risk_percent*100:.1f}% von {capital_input:.0f} €)")
         st.write(f"Minimum Risk:Reward-Ratio: **{rr}:1**")
         st.markdown("""
-        **Was bedeutet R:R?**  
-        - R:R = Risk:Reward = Risiko:Gewinn-Verhältnis  
-        - 1:2 bedeutet: Du riskierst 1 €, um 2 € zu gewinnen  
-        - Mindestens 1:2 empfohlen → langfristig profitabel, auch bei nur 50% Trefferquote  
-        - Bei 1:1 oder schlechter verlierst du auf Dauer Geld
+        **Was bedeutet R:R (Risk:Reward)?**  
+        - R:R = Risiko : Gewinn-Verhältnis  
+        - Beispiel: 1:3 → Du riskierst 1 €, um 3 € zu gewinnen  
+        - Mindestens **1:2** empfohlen → langfristig profitabel, auch bei nur 40–50% Trefferquote  
+        - Bei 1:1 oder schlechter verlierst du auf Dauer Geld, selbst bei guten Treffern  
         """)
     else:
         st.warning("Positionsgröße nicht berechenbar (ATR = 0 oder fehlend)")
