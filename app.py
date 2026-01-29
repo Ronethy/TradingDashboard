@@ -728,8 +728,153 @@ with tabs[4]:
       - **Beispiel**: Grün für Daytrade: Guter Einstieg für intraday-Positionen.
     ''')
 
+    st.markdown(r'''
+    ### Risiko- & Trade-Planung (neu erweitert)
+    ''')
+
+    st.markdown(r'''
+    - **Positionsgröße**: Wie viele Aktien/Contracts du kaufen solltest, basierend auf Kapital und Risiko%.
+      - **Formel**: Positionsgröße = (Kapital * Risiko%) / Risiko pro Aktie (z. B. ATR).
+      - **Beispiel**: Bei 500 € Kapital, 1% Risiko und 5 € Risiko pro Aktie → 1.0 Aktien (5 € Risiko = 1%).
+    ''')
+
+    st.markdown(r'''
+    - **Stop-Loss**: Automatischer Verkauf bei Erreichen eines Preises, um Verluste zu begrenzen.
+      - **Beispiel**: ATR 2× – Stop 4 € unter Entry bei ATR=2 €.
+      - **Warum wichtig?** Schützt dein Kapital – ohne Stop verlierst du alles.
+    ''')
+
+    st.markdown(r'''
+    - **Trailing-Stop**: Dynamischer Stop, der dem Preis folgt (z. B. 3× ATR unter aktuellem High).
+      - **Beispiel**: Entry 100 €, Preis steigt auf 120 € → Trailing-Stop 9 € darunter (bei ATR=3 €).
+      - **Warum?** Schützt Gewinne in Trends, ohne zu früh auszustoppen.
+    ''')
+
+    st.markdown(r'''
+    - **R:R (Risk:Reward)**: Risiko-Gewinn-Verhältnis – Minimum 1:2 empfohlen.
+      - **Formel**: R:R = Risiko / Gewinn = (Entry - Stop) / (Target - Entry).
+      - **Beispiel**: Risiko 5 €, Gewinn 15 € → 1:3 – super!
+      - **Warum wichtig?** Bei 1:2 gewinnst du langfristig, auch bei 40% Trefferquote.
+    ''')
+
+    st.markdown(r'''
+    - **ATR (Average True Range)**: Misst Volatilität – Basis für viele Stops.
+      - **Formel**: Durchschnittliche Range (High-Low) über 14 Perioden.
+      - **Beispiel**: ATR 2 € → Stop 4 € darunter bei 2× ATR.
+      - **Warum?** Passt den Stop an die Markt-Volatilität an – zu enge Stops in volatilen Märkten sind tödlich.
+    ''')
+
     st.info("Diese Erklärungen sind allgemein. Für detaillierte Strategien konsultiere immer einen Finanzberater.")
 
-# ── Erweiterte Analyse ────────────────────────────────────────────────────────────────
-with tabs[5]:
-    show_extended_analysis(ticker, snap, score, timeframe_str=None, df=df)  # df optional, wird für Volumen verwendet
+# ────────────────────────────────────────────────────────────────────────────────
+# Hauptfunktion für Tab 5 – Erweiterte Analyse
+# ────────────────────────────────────────────────────────────────────────────────
+def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
+    st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
+
+    if ticker is None or snap is None:
+        st.warning("Nicht alle benötigten Daten verfügbar. Wähle einen Ticker.")
+        return
+
+    # 1. Markt- & Makro-Kontext
+    st.markdown("**1. Markt- & Makro-Kontext**")
+    market_data = get_market_context()
+
+    vix_level = market_data.get('vix_level')
+    if vix_level is not None:
+        st.write(f"VIX-Level: **{vix_level:.2f}** ({market_data.get('vix_trend', 'N/A')}, {market_data.get('vix_category', 'N/A')})")
+    else:
+        st.write("VIX-Level: **Nicht verfügbar** (yfinance-Probleme – Cache hilft nach 1–2 Ladevorgängen)")
+
+    st.write(f"S&P 500 Trend: **{market_data.get('sp500_trend', 'N/A')}**")
+    st.write(f"Nasdaq Trend: **{market_data.get('nasdaq_trend', 'N/A')}**")
+    st.write(f"Advance/Decline Proxy: **{market_data.get('adv_dec_proxy', 'N/A')}**")
+    st.write(f"New Highs vs. New Lows Proxy: **{market_data.get('new_highs_lows', 'N/A')}**")
+
+    st.write("Nächste Makro-Termine:")
+    for event in market_data.get('macro_events', []):
+        st.write(f"- {event}")
+
+    # 2. Fundamental-Daten
+    st.markdown("**2. Aktien-spezifische Daten – Fundamental**")
+    market_cap, beta, sector, short_interest, free_float, days_to_cover = get_stock_fundamentals(ticker)
+    earnings_date, avg_move, guidance = get_earnings_info(ticker)
+    sector_strength = get_sector_strength(sector)
+
+    st.write(f"Market Cap: **{market_cap} Mrd. USD**" if market_cap else "Market Cap: N/A")
+    st.write(f"Free Float: **{free_float} Shares**" if free_float else "Free Float: N/A")
+    st.write(f"Beta: **{beta}**" if beta else "Beta: N/A")
+    st.write(f"Sektor: **{sector}** (Stärke: {sector_strength})")
+    st.write(f"Short Interest: **{short_interest}%**" if short_interest else "Short Interest: N/A")
+    st.write(f"Days to Cover: **{days_to_cover} Tage**" if days_to_cover else "Days to Cover: N/A")
+    st.write(f"Nächste Earnings: **{earnings_date}** (Guidance-Proxy: {guidance})")
+    st.write(f"Durchschnittlicher Earnings-Move: **{avg_move}**")
+
+    # 3. Volumen & Marktstruktur
+    st.markdown("**3. Volumen & Marktstruktur**")
+    if df is not None and not df.empty:
+        rvol, breakout_vol, pullback_vol = get_volume_structure(df)
+        vwap = get_vwap(df)
+        gap_level = get_gap_levels(df)
+
+        st.write(f"Relatives Volumen (RVOL): **{rvol:.2f}**" if rvol else "RVOL: N/A")
+        st.write(f"Volumen bei Breakouts: **{breakout_vol}**" if breakout_vol else "Breakout-Volumen: N/A")
+        st.write(f"Volumen bei Pullbacks: **{pullback_vol}**" if pullback_vol else "Pullback-Volumen: N/A")
+        st.write(f"Daily VWAP: **{vwap:.2f}**" if vwap else "VWAP: N/A")
+        st.write(f"Gap-Level: **{gap_level:.2f}**" if gap_level else "Gap-Level: N/A")
+    else:
+        st.write("Volumen-Daten: **Nicht verfügbar** (df fehlt)")
+
+    # 4. Risiko- & Trade-Planung – Kleinanleger-Modus mit Stop-Loss-Integration
+    st.markdown("**4. Risiko- & Trade-Planung (Kleinanleger-Modus)**")
+
+    capital_input = st.number_input(
+        "Dein verfügbares Kapital (€)",
+        min_value=100.0,
+        max_value=10000.0,
+        value=500.0,
+        step=50.0
+    )
+
+    risk_percent = st.slider(
+        "Risiko pro Trade (%)",
+        min_value=0.5,
+        max_value=5.0,
+        value=1.0,
+        step=0.5
+    ) / 100
+
+    stop_strategy = st.selectbox(
+        "Stop-Loss-Strategie",
+        options=[
+            "atr_1.5x", "atr_2x", "atr_3x",
+            "swing_low", "support_level",
+            "trailing_atr"
+        ],
+        format_func=lambda x: {
+            "atr_1.5x": "ATR 1.5× – aggressiv (enger Stop)",
+            "atr_2x": "ATR 2× – Standard (empfohlen)",
+            "atr_3x": "ATR 3× – defensiv (mehr Raum)",
+            "swing_low": "Unter letztem Swing-Low (technisch)",
+            "support_level": "Unter Support-Level (Price Action)",
+            "trailing_atr": "Trailing Stop mit ATR (für Trends)"
+        }[x]
+    )
+
+    # Swing-Low automatisch aus df erkennen (letztes lokales Minimum)
+    swing_low = None
+    if df is not None and not df.empty and len(df) >= 5:
+        # Einfache Methode: Niedrigstes Low in den letzten 10 Bars
+        swing_low = df['low'].iloc[-10:].min()
+
+    # Support-Level (Beispiel: unter EMA50)
+    support_level = df['ema50'].iloc[-1] if df is not None and 'ema50' in df.columns else None
+
+    position_size, risk_amount, stop_price, target_2r, stop_info = get_risk_management(
+        snap, snap.price, capital_input, risk_percent, stop_strategy,
+        swing_low=swing_low, support_level=support_level
+    )
+
+    if position_size:
+        st.success(f"**Positionsgröße:** {position_size:.1f} Aktien/Contracts")
+        st.write(f"**Stop-Loss-
