@@ -5,12 +5,12 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# Indikator-Funktionen
+# Indikator-Funktionen aus deinem Projekt
 from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Markt- & Makro-Kontext (maximal robust)
+# Markt- & Makro-Kontext (robust gegen NaN und leere Daten)
 # ────────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=900)  # 15 Min Cache
 def get_market_context():
@@ -60,20 +60,20 @@ def get_market_context():
     except:
         pass
 
-    # Advance/Decline Proxy – NaN-sicher & robust
+    # Advance/Decline Proxy – NaN-sicher
     adv_dec_proxy = "N/A"
     if 'sp500' in locals() and not sp500.empty and len(sp500) >= 2:
         try:
             pct_changes = sp500['Close'].pct_change().dropna()
             if not pct_changes.empty:
-                mean_pct = float(pct_changes.mean())  # explizit float erzwingen
+                mean_pct = pct_changes.mean()
                 if pd.isna(mean_pct):
                     adv_dec_proxy = "neutral (Daten unklar)"
                 else:
+                    mean_pct = float(mean_pct)  # explizit Skalar
                     adv_dec_proxy = "positiv" if mean_pct > 0 else "negativ" if mean_pct < 0 else "neutral"
-        except Exception as e:
-            adv_dec_proxy = f"Fehler ({str(e)})"
-
+        except:
+            pass
     market_data["adv_dec_proxy"] = adv_dec_proxy
 
     # New Highs vs. Lows Proxy
@@ -87,7 +87,6 @@ def get_market_context():
             new_highs_lows = "mehr Highs" if highs_count > lows_count else "mehr Lows" if lows_count > highs_count else "ausgeglichen"
         except:
             pass
-
     market_data["new_highs_lows"] = new_highs_lows
 
     return market_data
@@ -136,7 +135,7 @@ def get_earnings_info(ticker):
         return 'N/A', 'N/A', 'N/A'
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Volumen & Struktur
+# Volumen & Marktstruktur
 # ────────────────────────────────────────────────────────────────────────────────
 def get_volume_structure(df):
     if df.empty:
@@ -225,12 +224,12 @@ def get_extended_option_bias(snap, score, vix_level):
         return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Erweiterter Chart – fest über ~4 Wochen Daily
+# Erweiterter Chart – feste 4-Wochen-Ansicht (Daily) mit Fibonacci
 # ────────────────────────────────────────────────────────────────────────────────
 def get_extended_chart(ticker):
     try:
         end = datetime.now()
-        start = end - timedelta(days=40)  # Puffer für Wochenenden
+        start = end - timedelta(days=40)  # ~4 Wochen + Puffer
         df = yf.download(ticker, start=start, end=end, interval="1d", progress=False)
         
         if df.empty or len(df) < 5:
@@ -280,18 +279,39 @@ def get_extended_chart(ticker):
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
-        fib_high = df['high'].max()
-        fib_low = df['low'].min()
-        fib_levels = {
-            '0%': fib_low,
-            '23.6%': fib_low + 0.236 * (fib_high - fib_low),
-            '38.2%': fib_low + 0.382 * (fib_high - fib_low),
-            '50%': fib_low + 0.5 * (fib_high - fib_low),
-            '61.8%': fib_low + 0.618 * (fib_high - fib_low),
-            '100%': fib_high
-        }
-        for level, value in fib_levels.items():
-            fig.add_hline(y=value, line_dash="dot", line_color="purple", annotation_text=level, row=1, col=1)
+        # Fibonacci – verbessert & sichtbar
+        if len(df) >= 5:
+            fib_high = df['high'].max()
+            fib_low = df['low'].min()
+            fib_range = fib_high - fib_low
+            
+            if fib_range > 0:
+                fib_levels = {
+                    '0%': fib_low,
+                    '23.6%': fib_low + 0.236 * fib_range,
+                    '38.2%': fib_low + 0.382 * fib_range,
+                    '50%': fib_low + 0.5 * fib_range,
+                    '61.8%': fib_low + 0.618 * fib_range,
+                    '78.6%': fib_low + 0.786 * fib_range,
+                    '100%': fib_high
+                }
+
+                for level_name, level_price in fib_levels.items():
+                    fig.add_hline(
+                        y=level_price,
+                        line_dash="dot",
+                        line_color="purple",
+                        line_width=1.5,
+                        annotation_text=f"{level_name} ({level_price:.2f})",
+                        annotation_position="right",
+                        annotation_font_size=10,
+                        annotation_font_color="purple",
+                        row=1, col=1
+                    )
+            else:
+                st.caption("Fibonacci: Preisbereich zu klein (High ≈ Low)")
+        else:
+            st.caption("Fibonacci: Zu wenige Daten für sinnvolle Berechnung")
 
         fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
 
@@ -332,7 +352,7 @@ def get_extended_chart(ticker):
         return None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Hauptfunktion – Tab 5
+# Hauptfunktion für Tab 5 – Erweiterte Analyse
 # ────────────────────────────────────────────────────────────────────────────────
 def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
@@ -375,7 +395,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     st.write(f"Nächste Earnings: **{earnings_date}** (Guidance-Proxy: {guidance})")
     st.write(f"Durchschnittlicher Earnings-Move: **{avg_move}**")
 
-    # 3. Volumen & Struktur
+    # 3. Volumen & Marktstruktur
     st.markdown("**3. Volumen & Marktstruktur**")
     if df is not None and not df.empty:
         rvol, breakout_vol, pullback_vol = get_volume_structure(df)
@@ -404,7 +424,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     extended_bias = get_extended_option_bias(snap, score, market_data.get('vix_level'))
     st.markdown(extended_bias)
 
-    # 6. Erweiterter Chart – fest über ~4 Wochen Daily
+    # 6. Erweiterter Chart – feste 4-Wochen-Ansicht (Daily) mit Fibonacci
     st.markdown("**6. Erweiterter Chart (letzte ~4 Wochen, Daily)**")
     fig = get_extended_chart(ticker)
     if fig:
