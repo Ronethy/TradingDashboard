@@ -5,29 +5,40 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# Wichtig: Imports der Indikator-Funktionen
+# Wichtig: Indikator-Funktionen aus deinem Projekt
 from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen
+# Markt- & Makro-Kontext (mit Cache & Robustheit)
 # ────────────────────────────────────────────────────────────────────────────────
-
+@st.cache_data(ttl=300)  # 5 Min Cache
 def get_market_context():
     try:
-        vix = yf.download("^VIX", period="5d", progress=False)
-        vix_level = vix['Close'].iloc[-1] if not vix.empty else None
-        vix_trend = "steigend" if vix['Close'].pct_change().iloc[-1] > 0 else "fallend" if vix['Close'].pct_change().iloc[-1] < 0 else "seitwärts"
-        vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
+        vix = yf.download("^VIX", period="5d", progress=False, timeout=10)
+        if not vix.empty and len(vix) >= 2:
+            vix_level = float(vix['Close'].iloc[-1])
+            vix_change = vix['Close'].pct_change().iloc[-1]
+            vix_trend = "steigend" if vix_change > 0 else "fallend" if vix_change < 0 else "seitwärts"
+            vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
+        else:
+            vix_level = vix_trend = vix_category = None
 
-        sp500 = yf.download("^GSPC", period="6mo", progress=False)
-        sp500_trend = "über EMA20/50" if not sp500.empty and sp500['Close'].iloc[-1] > sp500['Close'].ewm(span=20).mean().iloc[-1] and sp500['Close'].iloc[-1] > sp500['Close'].ewm(span=50).mean().iloc[-1] else "unter EMA20/50"
+        sp500 = yf.download("^GSPC", period="6mo", progress=False, timeout=10)
+        sp500_trend = None
+        if not sp500.empty:
+            ema20 = sp500['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            ema50 = sp500['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            sp500_trend = "über EMA20/50" if sp500['Close'].iloc[-1] > ema20 and sp500['Close'].iloc[-1] > ema50 else "unter EMA20/50"
 
-        nasdaq = yf.download("^IXIC", period="6mo", progress=False)
-        nasdaq_trend = "über EMA20/50" if not nasdaq.empty and nasdaq['Close'].iloc[-1] > nasdaq['Close'].ewm(span=20).mean().iloc[-1] and nasdaq['Close'].iloc[-1] > nasdaq['Close'].ewm(span=50).mean().iloc[-1] else "unter EMA20/50"
+        nasdaq = yf.download("^IXIC", period="6mo", progress=False, timeout=10)
+        nasdaq_trend = None
+        if not nasdaq.empty:
+            ema20 = nasdaq['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
+            ema50 = nasdaq['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+            nasdaq_trend = "über EMA20/50" if nasdaq['Close'].iloc[-1] > ema20 and nasdaq['Close'].iloc[-1] > ema50 else "unter EMA20/50"
 
         adv_dec_proxy = "positiv" if not sp500.empty and sp500['Close'].pct_change().mean() > 0 else "negativ"
-
         new_highs_lows = "mehr Highs" if not sp500.empty and (sp500['Close'] == sp500['Close'].rolling(252).max()).sum() > (sp500['Close'] == sp500['Close'].rolling(252).min()).sum() else "mehr Lows"
 
         macro_events = [
@@ -46,9 +57,14 @@ def get_market_context():
             "new_highs_lows": new_highs_lows,
             "macro_events": macro_events
         }
-    except Exception:
+    except Exception as e:
+        st.caption(f"Markt-Kontext konnte nicht geladen werden: {str(e)}")
         return {}
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Fundamental-Daten (mit Cache)
+# ────────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=600)  # 10 Min Cache
 def get_stock_fundamentals(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -60,35 +76,43 @@ def get_stock_fundamentals(ticker):
         free_float = info.get('floatShares', None)
         days_to_cover = info.get('shortRatio', None)
         return market_cap, beta, sector, short_interest, free_float, days_to_cover
-    except:
+    except Exception:
         return None, None, 'N/A', None, None, None
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Earnings-Info (stabiler über earnings_dates)
+# ────────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)  # 1 Stunde Cache – Earnings ändern sich selten
 def get_earnings_info(ticker):
     try:
         stock = yf.Ticker(ticker)
-        calendar = stock.calendar
-        earnings_date = calendar['Earnings Date'][0].strftime('%Y-%m-%d') if 'Earnings Date' in calendar and isinstance(calendar['Earnings Date'], list) else 'N/A'
+        earnings = stock.earnings_dates
+        if earnings is not None and not earnings.empty:
+            next_earnings = earnings.index[0].strftime('%Y-%m-%d') if len(earnings) > 0 else 'N/A'
+            surprises = earnings['Surprise(%)'].dropna()
+            avg_move = round(surprises.mean(), 2) if not surprises.empty else 'N/A'
+        else:
+            next_earnings = avg_move = 'N/A'
 
-        hist = stock.earnings_dates
-        avg_move = round(hist['Surprise(%)'].mean(), 2) if not hist.empty else 'N/A'
-
-        guidance = "positiv" if avg_move > 0 else "negativ" if avg_move < 0 else "neutral"
-
-        return earnings_date, avg_move, guidance
+        guidance = "positiv" if isinstance(avg_move, float) and avg_move > 0 else "negativ" if isinstance(avg_move, float) and avg_move < 0 else "neutral"
+        return next_earnings, avg_move, guidance
     except:
         return 'N/A', 'N/A', 'N/A'
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Volumen & Struktur
+# ────────────────────────────────────────────────────────────────────────────────
 def get_volume_structure(df):
     if df.empty:
         return None, None, None
     avg_volume = df['volume'].mean()
     latest_volume = df['volume'].iloc[-1]
-    rvol = latest_volume / avg_volume if avg_volume > 0 else None
+    rvol = round(latest_volume / avg_volume, 2) if avg_volume > 0 else None
 
-    df['breakout'] = (df['close'] > df['high'].shift(1)) & (df['volume'] > avg_volume)
-    breakout_vol = "hoch" if df['breakout'].any() else "niedrig"
+    df['breakout'] = (df['close'] > df['high'].shift(1)) & (df['volume'] > avg_volume * 1.5)
+    breakout_vol = "hoch" if df['breakout'].any() else "normal/niedrig"
 
-    pullback_vol = "niedrig" if df['volume'][df['close'] < df['close'].shift(1)].mean() < avg_volume else "hoch"
+    pullback_vol = "niedrig" if df['volume'][(df['close'] < df['close'].shift(1))].mean() < avg_volume else "hoch/normal"
 
     return rvol, breakout_vol, pullback_vol
 
@@ -98,69 +122,75 @@ def get_vwap(df):
     typical_price = (df['high'] + df['low'] + df['close']) / 3
     pv = typical_price * df['volume']
     vwap = pv.cumsum() / df['volume'].cumsum()
-    return vwap.iloc[-1]
+    return round(vwap.iloc[-1], 2)
 
 def get_gap_levels(df):
     if len(df) < 2:
         return None
     gaps = df['open'] - df['close'].shift(1)
-    # ATR lokal berechnen, falls nicht vorhanden
+    # ATR lokal berechnen, falls fehlt
     if 'ATR' not in df.columns:
-        df['ATR'] = atr(df)  # ← Hier berechnen wir ATR selbst!
+        df['ATR'] = atr(df)
     atr_mean = df['ATR'].mean()
-    gap_levels = gaps[gaps.abs() > atr_mean]
-    return gap_levels.iloc[-1] if not gap_levels.empty else None
+    significant_gaps = gaps[gaps.abs() > atr_mean]
+    return round(significant_gaps.iloc[-1], 2) if not significant_gaps.empty else None
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Sektor-Stärke (vs. S&P 500)
+# ────────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
 def get_sector_strength(sector):
     try:
         sector_etf_map = {
             'Technology': '^IXIC',
             'Consumer Cyclical': '^DJUSCY',
+            # Füge bei Bedarf mehr hinzu
         }
         etf = sector_etf_map.get(sector, '^GSPC')
-        sector_data = yf.download(etf, period="1mo", progress=False)
+        sector_data = yf.download(etf, period="1mo", progress=False, timeout=10)
         sector_return = sector_data['Close'].pct_change().mean() * 100 if not sector_data.empty else None
-        sp500_data = yf.download("^GSPC", period="1mo", progress=False)
+
+        sp500_data = yf.download("^GSPC", period="1mo", progress=False, timeout=10)
         sp500_return = sp500_data['Close'].pct_change().mean() * 100 if not sp500_data.empty else None
+
+        if sector_return is None or sp500_return is None:
+            return "N/A"
         strength = "stark (outperforms S&P)" if sector_return > sp500_return else "schwach (underperforms S&P)" if sector_return < sp500_return else "gleichlaufend"
         return strength
     except:
         return "N/A"
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Risiko & Positionsgröße
+# ────────────────────────────────────────────────────────────────────────────────
 def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
     if snap.atr == 0 or snap.atr is None:
         return None, None
     position_size = (capital * risk_per_trade) / snap.atr
-    rr = 2.0
+    rr = 2.0  # Minimum R:R
     return round(position_size, 0), rr
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Erweiterte Option-Bias
+# ────────────────────────────────────────────────────────────────────────────────
 def get_extended_option_bias(snap, score, vix_level):
     if score >= 70:
-        vix_info = f" (VIX {vix_level:.1f} – ruhiger Markt, Calls bevorzugt)" if vix_level else ""
+        vix_info = f" (VIX {vix_level:.1f} – ruhiger Markt, Calls bevorzugt)" if vix_level is not None else ""
         return f"Stark bullish – Priorisiere Calls. Suche Strikes über EMA50. RSI niedrig: Guter Einstieg. Hohes Volume bestätigt Trend{vix_info}."
     elif score >= 40:
         return "Neutral – Beobachte. Calls wenn RSI <50, Puts wenn RSI >70. Warte auf MACD-Crossover für Richtung."
     else:
-        vix_info = f" (VIX {vix_level:.1f} – höhere Volatilität, Puts bevorzugt)" if vix_level else ""
+        vix_info = f" (VIX {vix_level:.1f} – höhere Volatilität, Puts bevorzugt)" if vix_level is not None else ""
         return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Erweiterter Chart (unverändert, aber mit ATR/Indikator-Check)
+# ────────────────────────────────────────────────────────────────────────────────
 def get_extended_chart(df, ticker, timeframe_str):
     if df.empty:
         return None
 
-    # Fibonacci Levels
-    fib_high = df['high'].max()
-    fib_low = df['low'].min()
-    fib_levels = {
-        '0%': fib_low,
-        '23.6%': fib_low + 0.236 * (fib_high - fib_low),
-        '38.2%': fib_low + 0.382 * (fib_high - fib_low),
-        '50%': fib_low + 0.5 * (fib_high - fib_low),
-        '61.8%': fib_low + 0.618 * (fib_high - fib_low),
-        '100%': fib_high
-    }
-
-    # Indikatoren berechnen (falls nicht vorhanden)
+    # Sicherstellen, dass alle Indikatoren vorhanden sind
     if 'ema20' not in df.columns:
         df["ema20"] = ema(df["close"], 20)
     if 'ema50' not in df.columns:
@@ -208,6 +238,17 @@ def get_extended_chart(df, ticker, timeframe_str):
     fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
+    # Fibonacci Levels
+    fib_high = df['high'].max()
+    fib_low = df['low'].min()
+    fib_levels = {
+        '0%': fib_low,
+        '23.6%': fib_low + 0.236 * (fib_high - fib_low),
+        '38.2%': fib_low + 0.382 * (fib_high - fib_low),
+        '50%': fib_low + 0.5 * (fib_high - fib_low),
+        '61.8%': fib_low + 0.618 * (fib_high - fib_low),
+        '100%': fib_high
+    }
     for level, value in fib_levels.items():
         fig.add_hline(y=value, line_dash="dot", line_color="purple", annotation_text=level, row=1, col=1)
 
@@ -245,7 +286,9 @@ def get_extended_chart(df, ticker, timeframe_str):
 
     return fig
 
-# Hauptfunktion für den Tab
+# ────────────────────────────────────────────────────────────────────────────────
+# Hauptfunktion – Tab 5
+# ────────────────────────────────────────────────────────────────────────────────
 def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
 
@@ -253,7 +296,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
         st.warning("Nicht alle benötigten Daten verfügbar. Wähle einen Ticker und warte auf Chart-Laden.")
         return
 
-    # ATR lokal berechnen, falls nicht vorhanden
+    # Sicherstellen, dass ATR vorhanden ist
     if 'ATR' not in df.columns:
         df['ATR'] = atr(df)
 
@@ -265,7 +308,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     if vix_level is not None:
         st.write(f"VIX-Level: **{vix_level:.2f}** ({market_data.get('vix_trend', 'N/A')}, {market_data.get('vix_category', 'N/A')})")
     else:
-        st.write("VIX-Level: **Nicht verfügbar**")
+        st.write("VIX-Level: **Nicht verfügbar** (yfinance-Probleme)")
 
     st.write(f"S&P 500 Trend: **{market_data.get('sp500_trend', 'N/A')}**")
     st.write(f"Nasdaq Trend: **{market_data.get('nasdaq_trend', 'N/A')}**")
@@ -276,7 +319,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     for event in market_data.get('macro_events', []):
         st.write(f"- {event}")
 
-    # 2. Aktien-spezifische Daten – Fundamental
+    # 2. Fundamental-Daten
     st.markdown("**2. Aktien-spezifische Daten – Fundamental**")
     market_cap, beta, sector, short_interest, free_float, days_to_cover = get_stock_fundamentals(ticker)
     earnings_date, avg_move, guidance = get_earnings_info(ticker)
@@ -291,7 +334,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     st.write(f"Nächste Earnings: **{earnings_date}** (Guidance-Proxy: {guidance})")
     st.write(f"Durchschnittlicher Earnings-Move: **{avg_move}**")
 
-    # 3. Volumen & Marktstruktur
+    # 3. Volumen & Struktur
     st.markdown("**3. Volumen & Marktstruktur**")
     rvol, breakout_vol, pullback_vol = get_volume_structure(df)
     vwap = get_vwap(df)
@@ -303,7 +346,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     st.write(f"Daily VWAP: **{vwap:.2f}**" if vwap else "VWAP: N/A")
     st.write(f"Gap-Level: **{gap_level:.2f}**" if gap_level else "Gap-Level: N/A")
 
-    # 4. Risiko- & Trade-Planung
+    # 4. Risiko & Trade-Planung
     st.markdown("**4. Risiko- & Trade-Planung**")
     position_size, rr = get_risk_management(snap)
     if position_size:
@@ -312,12 +355,12 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     else:
         st.write("Positionsgröße: **Nicht berechenbar** (ATR = 0)")
 
-    # 5. Erweiterte Option-Bias
+    # 5. Erweiterte Options-Empfehlung
     st.markdown("**5. Erweiterte Options-Empfehlung**")
     extended_bias = get_extended_option_bias(snap, score, market_data.get('vix_level'))
     st.markdown(extended_bias)
 
-    # 6. Erweiterter Chart mit Fibonacci
+    # 6. Erweiterter Chart
     st.markdown("**6. Erweiterter Chart mit Fibonacci**")
     fig = get_extended_chart(df, ticker, timeframe_str)
     if fig:
