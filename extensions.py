@@ -10,14 +10,14 @@ from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Markt- & Makro-Kontext (robust gegen NaN und leere Daten)
+# Markt- & Makro-Kontext (maximal stabilisiert)
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=900)  # 15 Min Cache
+@st.cache_data(ttl=1800)  # 30 Min Cache – sehr lang
 def get_market_context():
     market_data = {
         "vix_level": None,
-        "vix_trend": None,
-        "vix_category": None,
+        "vix_trend": "N/A",
+        "vix_category": "N/A",
         "sp500_trend": "N/A",
         "nasdaq_trend": "N/A",
         "adv_dec_proxy": "N/A",
@@ -29,9 +29,10 @@ def get_market_context():
         ]
     }
 
+    # VIX – mit doppeltem Versuch
     try:
         vix = yf.download("^VIX", period="5d", progress=False, timeout=15)
-        if vix.empty:
+        if vix.empty or len(vix) < 2:
             vix = yf.download("VIX", period="5d", progress=False, timeout=15)
         if not vix.empty and len(vix) >= 2:
             vix_level = float(vix['Close'].iloc[-1])
@@ -42,6 +43,7 @@ def get_market_context():
     except Exception as e:
         st.caption(f"VIX-Laden fehlgeschlagen: {str(e)}")
 
+    # S&P 500
     try:
         sp500 = yf.download("^GSPC", period="6mo", progress=False, timeout=15)
         if not sp500.empty:
@@ -51,6 +53,7 @@ def get_market_context():
     except:
         pass
 
+    # Nasdaq
     try:
         nasdaq = yf.download("^IXIC", period="6mo", progress=False, timeout=15)
         if not nasdaq.empty:
@@ -60,7 +63,7 @@ def get_market_context():
     except:
         pass
 
-    # Advance/Decline Proxy – NaN-sicher
+    # Advance/Decline Proxy – NaN-sicher & robust
     adv_dec_proxy = "N/A"
     if 'sp500' in locals() and not sp500.empty and len(sp500) >= 2:
         try:
@@ -92,8 +95,9 @@ def get_market_context():
     return market_data
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Fundamental-Daten
+# Die restlichen Funktionen (wie in deiner letzten stabilen Version)
 # ────────────────────────────────────────────────────────────────────────────────
+
 @st.cache_data(ttl=1800)
 def get_stock_fundamentals(ticker):
     try:
@@ -109,9 +113,6 @@ def get_stock_fundamentals(ticker):
     except:
         return None, None, 'N/A', None, None, None
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Earnings-Info
-# ────────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_earnings_info(ticker):
     try:
@@ -134,9 +135,6 @@ def get_earnings_info(ticker):
     except:
         return 'N/A', 'N/A', 'N/A'
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Volumen & Marktstruktur
-# ────────────────────────────────────────────────────────────────────────────────
 def get_volume_structure(df):
     if df.empty:
         return None, None, None
@@ -170,9 +168,6 @@ def get_gap_levels(df):
     significant_gaps = gaps[gaps.abs() > atr_mean]
     return round(significant_gaps.iloc[-1], 2) if not significant_gaps.empty else None
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Sektor-Stärke
-# ────────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800)
 def get_sector_strength(sector):
     try:
@@ -200,9 +195,6 @@ def get_sector_strength(sector):
     except:
         return "N/A"
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Risiko & Positionsgröße
-# ────────────────────────────────────────────────────────────────────────────────
 def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
     if snap.atr == 0 or snap.atr is None:
         return None, None
@@ -210,9 +202,6 @@ def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
     rr = 2.0
     return round(position_size, 0), rr
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Erweiterte Option-Bias
-# ────────────────────────────────────────────────────────────────────────────────
 def get_extended_option_bias(snap, score, vix_level):
     if score >= 70:
         vix_info = f" (VIX {vix_level:.1f} – ruhiger Markt, Calls bevorzugt)" if vix_level is not None else ""
@@ -223,13 +212,10 @@ def get_extended_option_bias(snap, score, vix_level):
         vix_info = f" (VIX {vix_level:.1f} – höhere Volatilität, Puts bevorzugt)" if vix_level is not None else ""
         return f"Bearish – Priorisiere Puts. Suche Strikes unter EMA20. Hoher RSI: Potenzieller Abverkauf. Niedriges Volume: Schwäche{vix_info}."
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Erweiterter Chart – feste 4-Wochen-Ansicht (Daily) mit Fibonacci
-# ────────────────────────────────────────────────────────────────────────────────
 def get_extended_chart(ticker):
     try:
         end = datetime.now()
-        start = end - timedelta(days=40)  # ~4 Wochen + Puffer
+        start = end - timedelta(days=40)
         df = yf.download(ticker, start=start, end=end, interval="1d", progress=False)
         
         if df.empty or len(df) < 5:
@@ -279,7 +265,7 @@ def get_extended_chart(ticker):
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
-        # Fibonacci – verbessert & sichtbar
+        # Fibonacci – auffällig & sichtbar
         if len(df) >= 5:
             fib_high = df['high'].max()
             fib_low = df['low'].min()
@@ -301,17 +287,17 @@ def get_extended_chart(ticker):
                         y=level_price,
                         line_dash="dot",
                         line_color="purple",
-                        line_width=1.5,
+                        line_width=2,  # dicker
                         annotation_text=f"{level_name} ({level_price:.2f})",
                         annotation_position="right",
-                        annotation_font_size=10,
+                        annotation_font_size=12,  # größer
                         annotation_font_color="purple",
                         row=1, col=1
                     )
             else:
                 st.caption("Fibonacci: Preisbereich zu klein (High ≈ Low)")
         else:
-            st.caption("Fibonacci: Zu wenige Daten für sinnvolle Berechnung")
+            st.caption("Fibonacci: Zu wenige Daten")
 
         fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
 
@@ -352,7 +338,7 @@ def get_extended_chart(ticker):
         return None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Hauptfunktion für Tab 5 – Erweiterte Analyse
+# Hauptfunktion – Tab 5
 # ────────────────────────────────────────────────────────────────────────────────
 def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     st.subheader("🧠 Erweiterte Analyse – Vollständige Datenbasis")
@@ -369,7 +355,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     if vix_level is not None:
         st.write(f"VIX-Level: **{vix_level:.2f}** ({market_data.get('vix_trend', 'N/A')}, {market_data.get('vix_category', 'N/A')})")
     else:
-        st.write("VIX-Level: **Nicht verfügbar**")
+        st.write("VIX-Level: **Nicht verfügbar** (yfinance-Probleme – Cache hilft nach 1–2 Ladevorgängen)")
 
     st.write(f"S&P 500 Trend: **{market_data.get('sp500_trend', 'N/A')}**")
     st.write(f"Nasdaq Trend: **{market_data.get('nasdaq_trend', 'N/A')}**")
@@ -395,7 +381,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     st.write(f"Nächste Earnings: **{earnings_date}** (Guidance-Proxy: {guidance})")
     st.write(f"Durchschnittlicher Earnings-Move: **{avg_move}**")
 
-    # 3. Volumen & Marktstruktur
+    # 3. Volumen & Struktur
     st.markdown("**3. Volumen & Marktstruktur**")
     if df is not None and not df.empty:
         rvol, breakout_vol, pullback_vol = get_volume_structure(df)
