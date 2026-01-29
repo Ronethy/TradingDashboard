@@ -5,52 +5,31 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# Wichtig: Imports der Indikator-Funktionen aus deinem bestehenden Projekt
+# Wichtig: Imports der Indikator-Funktionen
 from logic.indicators import ema, rsi, atr
 from logic.additional_indicators import rsi_divergence, macd_info
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Hilfsfunktionen für erweiterte Markt- & Aktien-Daten
+# Hilfsfunktionen
 # ────────────────────────────────────────────────────────────────────────────────
 
 def get_market_context():
-    """Lädt VIX, S&P 500 und Nasdaq Trend + Advance/Decline-Proxy"""
     try:
-        # VIX
         vix = yf.download("^VIX", period="5d", progress=False)
-        if not vix.empty:
-            vix_level = float(vix['Close'].iloc[-1])  # explizit float
-            vix_change = vix['Close'].pct_change().iloc[-1]
-            vix_trend = "steigend" if vix_change > 0 else "fallend" if vix_change < 0 else "seitwärts"
-            vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
-        else:
-            vix_level = vix_trend = vix_category = None
+        vix_level = vix['Close'].iloc[-1] if not vix.empty else None
+        vix_trend = "steigend" if vix['Close'].pct_change().iloc[-1] > 0 else "fallend" if vix['Close'].pct_change().iloc[-1] < 0 else "seitwärts"
+        vix_category = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
 
-        # S&P 500 Trend
         sp500 = yf.download("^GSPC", period="6mo", progress=False)
-        if not sp500.empty:
-            sp500['EMA20'] = sp500['Close'].ewm(span=20, adjust=False).mean()
-            sp500['EMA50'] = sp500['Close'].ewm(span=50, adjust=False).mean()
-            sp500_trend = "über EMA20/50" if sp500['Close'].iloc[-1] > sp500['EMA20'].iloc[-1] and sp500['Close'].iloc[-1] > sp500['EMA50'].iloc[-1] else "unter EMA20/50"
-        else:
-            sp500_trend = None
+        sp500_trend = "über EMA20/50" if not sp500.empty and sp500['Close'].iloc[-1] > sp500['Close'].ewm(span=20).mean().iloc[-1] and sp500['Close'].iloc[-1] > sp500['Close'].ewm(span=50).mean().iloc[-1] else "unter EMA20/50"
 
-        # Nasdaq Trend
         nasdaq = yf.download("^IXIC", period="6mo", progress=False)
-        if not nasdaq.empty:
-            nasdaq['EMA20'] = nasdaq['Close'].ewm(span=20, adjust=False).mean()
-            nasdaq['EMA50'] = nasdaq['Close'].ewm(span=50, adjust=False).mean()
-            nasdaq_trend = "über EMA20/50" if nasdaq['Close'].iloc[-1] > nasdaq['EMA20'].iloc[-1] and nasdaq['Close'].iloc[-1] > nasdaq['EMA50'].iloc[-1] else "unter EMA20/50"
-        else:
-            nasdaq_trend = None
+        nasdaq_trend = "über EMA20/50" if not nasdaq.empty and nasdaq['Close'].iloc[-1] > nasdaq['Close'].ewm(span=20).mean().iloc[-1] and nasdaq['Close'].iloc[-1] > nasdaq['Close'].ewm(span=50).mean().iloc[-1] else "unter EMA20/50"
 
-        # Advance/Decline Proxy (über S&P 500 Up/Down Volume)
         adv_dec_proxy = "positiv" if not sp500.empty and sp500['Close'].pct_change().mean() > 0 else "negativ"
 
-        # New Highs vs. New Lows Proxy
         new_highs_lows = "mehr Highs" if not sp500.empty and (sp500['Close'] == sp500['Close'].rolling(252).max()).sum() > (sp500['Close'] == sp500['Close'].rolling(252).min()).sum() else "mehr Lows"
 
-        # Makro-Termine (statisch)
         macro_events = [
             "Fed-Zinsentscheid: 4.–5. Februar 2026",
             "CPI/PPI: 11. Februar 2026",
@@ -67,8 +46,7 @@ def get_market_context():
             "new_highs_lows": new_highs_lows,
             "macro_events": macro_events
         }
-    except Exception as e:
-        st.caption(f"Markt-Kontext konnte nicht geladen werden: {str(e)}")
+    except Exception:
         return {}
 
 def get_stock_fundamentals(ticker):
@@ -82,8 +60,7 @@ def get_stock_fundamentals(ticker):
         free_float = info.get('floatShares', None)
         days_to_cover = info.get('shortRatio', None)
         return market_cap, beta, sector, short_interest, free_float, days_to_cover
-    except Exception as e:
-        st.caption(f"Fundamentaldaten für {ticker} nicht verfügbar: {str(e)}")
+    except:
         return None, None, 'N/A', None, None, None
 
 def get_earnings_info(ticker):
@@ -127,7 +104,11 @@ def get_gap_levels(df):
     if len(df) < 2:
         return None
     gaps = df['open'] - df['close'].shift(1)
-    gap_levels = gaps[gaps.abs() > df['ATR'].mean()]
+    # ATR lokal berechnen, falls nicht vorhanden
+    if 'ATR' not in df.columns:
+        df['ATR'] = atr(df)  # ← Hier berechnen wir ATR selbst!
+    atr_mean = df['ATR'].mean()
+    gap_levels = gaps[gaps.abs() > atr_mean]
     return gap_levels.iloc[-1] if not gap_levels.empty else None
 
 def get_sector_strength(sector):
@@ -135,7 +116,6 @@ def get_sector_strength(sector):
         sector_etf_map = {
             'Technology': '^IXIC',
             'Consumer Cyclical': '^DJUSCY',
-            # Füge bei Bedarf mehr hinzu
         }
         etf = sector_etf_map.get(sector, '^GSPC')
         sector_data = yf.download(etf, period="1mo", progress=False)
@@ -151,7 +131,7 @@ def get_risk_management(snap, capital=100000, risk_per_trade=0.01):
     if snap.atr == 0 or snap.atr is None:
         return None, None
     position_size = (capital * risk_per_trade) / snap.atr
-    rr = 2.0  # Minimum R:R
+    rr = 2.0
     return round(position_size, 0), rr
 
 def get_extended_option_bias(snap, score, vix_level):
@@ -168,7 +148,7 @@ def get_extended_chart(df, ticker, timeframe_str):
     if df.empty:
         return None
 
-    # Fibonacci Levels berechnen
+    # Fibonacci Levels
     fib_high = df['high'].max()
     fib_low = df['low'].min()
     fib_levels = {
@@ -180,17 +160,22 @@ def get_extended_chart(df, ticker, timeframe_str):
         '100%': fib_high
     }
 
-    # Basis-Indikatoren
-    df["ema20"] = ema(df["close"], 20)
-    df["ema50"] = ema(df["close"], 50)
-    df["RSI"] = rsi(df["close"])
-    df["ATR"] = atr(df)
+    # Indikatoren berechnen (falls nicht vorhanden)
+    if 'ema20' not in df.columns:
+        df["ema20"] = ema(df["close"], 20)
+    if 'ema50' not in df.columns:
+        df["ema50"] = ema(df["close"], 50)
+    if 'RSI' not in df.columns:
+        df["RSI"] = rsi(df["close"])
+    if 'ATR' not in df.columns:
+        df["ATR"] = atr(df)
 
     # Bollinger Bands
-    df['bb_mid'] = df['close'].rolling(window=20).mean()
-    df['bb_std'] = df['close'].rolling(window=20).std()
-    df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
-    df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
+    if 'bb_mid' not in df.columns:
+        df['bb_mid'] = df['close'].rolling(window=20).mean()
+        df['bb_std'] = df['close'].rolling(window=20).std()
+        df['bb_upper'] = df['bb_mid'] + (df['bb_std'] * 2)
+        df['bb_lower'] = df['bb_mid'] - (df['bb_std'] * 2)
 
     # MACD
     ema_fast = df['close'].ewm(span=12, adjust=False).mean()
@@ -267,6 +252,10 @@ def show_extended_analysis(ticker, snap, score, timeframe_str, df):
     if ticker is None or snap is None or df.empty:
         st.warning("Nicht alle benötigten Daten verfügbar. Wähle einen Ticker und warte auf Chart-Laden.")
         return
+
+    # ATR lokal berechnen, falls nicht vorhanden
+    if 'ATR' not in df.columns:
+        df['ATR'] = atr(df)
 
     # 1. Markt- & Makro-Kontext
     st.markdown("**1. Markt- & Makro-Kontext**")
