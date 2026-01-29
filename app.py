@@ -732,4 +732,4 @@ with tabs[4]:
 
 # ── Erweiterte Analyse ────────────────────────────────────────────────────────────────
 with tabs[5]:
-    show_extended_analysis(ticker, snap, score, timeframe_str, df)
+    show_extended_analysis(ticker, snap, score, timeframe_str=None, df=df)  # df optional, wird für Volumen verwendet
