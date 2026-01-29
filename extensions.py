@@ -12,7 +12,7 @@ from logic.additional_indicators import rsi_divergence, macd_info
 # ────────────────────────────────────────────────────────────────────────────────
 # Markt- & Makro-Kontext (robust & mit Fallbacks)
 # ────────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800)  # 30 Minuten Cache
+@st.cache_data(ttl=1800)  # 30 Min Cache
 def get_market_context():
     market_data = {
         "vix_level": None,
@@ -29,10 +29,10 @@ def get_market_context():
         ]
     }
 
-    # VIX mit Fallback-Ticker
+    # VIX
     try:
         vix = yf.download("^VIX", period="5d", progress=False, timeout=15)
-        if vix.empty or len(vix) < 2:
+        if vix.empty:
             vix = yf.download("VIX", period="5d", progress=False, timeout=15)
         if not vix.empty and len(vix) >= 2:
             vix_level = float(vix['Close'].iloc[-1])
@@ -41,7 +41,7 @@ def get_market_context():
             market_data["vix_trend"] = "steigend" if vix_change > 0 else "fallend" if vix_change < 0 else "seitwärts"
             market_data["vix_category"] = "<15 (niedrig)" if vix_level < 15 else "15-20 (mittel)" if vix_level <= 20 else ">20 (hoch)"
     except Exception as e:
-        st.caption(f"VIX-Daten konnten nicht geladen werden: {str(e)}")
+        st.caption(f"VIX-Laden fehlgeschlagen: {str(e)}")
 
     # S&P 500
     try:
@@ -63,7 +63,7 @@ def get_market_context():
     except:
         pass
 
-    # Advance/Decline Proxy – sehr robust gegen NaN
+    # Advance/Decline Proxy
     if 'sp500' in locals() and not sp500.empty and len(sp500) >= 2:
         try:
             pct_changes = sp500['Close'].pct_change().dropna()
@@ -109,7 +109,7 @@ def get_stock_fundamentals(ticker):
         return None, None, 'N/A', None, None, None
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Earnings-Info (stabiler Fallback)
+# Earnings-Info
 # ────────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def get_earnings_info(ticker):
@@ -281,7 +281,7 @@ def get_extended_chart(ticker):
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_lower"], name="BB Lower", line=dict(color="rgba(0,255,0,0.5)", dash="dash")), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df["bb_mid"], name="BB Mid", line=dict(color="rgba(128,128,128,0.7)")), row=1, col=1)
 
-        # Fibonacci – sehr sichtbar gemacht
+        # Fibonacci – sehr sichtbar
         if len(df) >= 5:
             fib_high = df['high'].max()
             fib_low = df['low'].min()
@@ -303,8 +303,8 @@ def get_extended_chart(ticker):
                         y=level_price,
                         line_dash="dot",
                         line_color="purple",
-                        line_width=2.5,  # dicker
-                        annotation_text=f"{level_name}  {level_price:.2f}",
+                        line_width=2.5,
+                        annotation_text=f"{level_name} ({level_price:.2f})",
                         annotation_position="right",
                         annotation_font_size=12,
                         annotation_font_color="purple",
@@ -313,7 +313,7 @@ def get_extended_chart(ticker):
             else:
                 st.caption("Fibonacci: Preisbereich zu klein (High ≈ Low)")
         else:
-            st.caption("Fibonacci: Zu wenige Daten für sinnvolle Berechnung")
+            st.caption("Fibonacci: Zu wenige Daten")
 
         fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="Volume"), row=2, col=1)
 
@@ -382,7 +382,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     for event in market_data.get('macro_events', []):
         st.write(f"- {event}")
 
-    # 2. Fundamental-Daten
+    # 2. Aktien-spezifische Daten – Fundamental
     st.markdown("**2. Aktien-spezifische Daten – Fundamental**")
     market_cap, beta, sector, short_interest, free_float, days_to_cover = get_stock_fundamentals(ticker)
     earnings_date, avg_move, guidance = get_earnings_info(ticker)
@@ -412,7 +412,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
     else:
         st.write("Volumen-Daten: **Nicht verfügbar** (df fehlt)")
 
-    # 4. Risiko- & Trade-Planung – Kleinanleger-Modus mit Erklärung
+    # 4. Risiko- & Trade-Planung – Kleinanleger-Modus mit Stop-Loss-Integration
     st.markdown("**4. Risiko- & Trade-Planung (Kleinanleger-Modus)**")
 
     capital_input = st.number_input(
@@ -420,8 +420,7 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
         min_value=100.0,
         max_value=10000.0,
         value=500.0,
-        step=50.0,
-        help="Realistisch für Kleinanleger: 100–1000 €"
+        step=50.0
     )
 
     risk_percent = st.slider(
@@ -429,25 +428,71 @@ def show_extended_analysis(ticker, snap, score, timeframe_str=None, df=None):
         min_value=0.5,
         max_value=5.0,
         value=1.0,
-        step=0.5,
-        help="Wie viel % deines Kapitals willst du maximal riskieren?"
+        step=0.5
     ) / 100
 
-    position_size, rr, risk_amount = get_risk_management(snap, capital=capital_input, risk_per_trade=risk_percent)
+    stop_strategy = st.selectbox(
+        "Stop-Loss-Strategie",
+        options=[
+            "atr_1.5x", "atr_2x", "atr_3x",
+            "swing_low", "support_level",
+            "trailing_atr"
+        ],
+        format_func=lambda x: {
+            "atr_1.5x": "ATR 1.5× – aggressiv (enger Stop)",
+            "atr_2x": "ATR 2× – Standard (empfohlen)",
+            "atr_3x": "ATR 3× – defensiv (mehr Raum)",
+            "swing_low": "Unter letztem Swing-Low (technisch)",
+            "support_level": "Unter Support-Level (Price Action)",
+            "trailing_atr": "Trailing Stop mit ATR (für Trends)"
+        }[x]
+    )
+
+    # Swing-Low automatisch aus df erkennen (letztes lokales Minimum)
+    swing_low = None
+    if df is not None and not df.empty and len(df) >= 5:
+        swing_low = df['low'][-10:].min()  # Letzte 10 Bars – adjustierbar
+
+    # Support-Level (Beispiel: unter EMA50)
+    support_level = df['ema50'].iloc[-1] if df is not None and 'ema50' in df.columns else None
+
+    position_size, risk_amount, stop_price, target_2r, stop_info = get_risk_management(
+        snap, snap.price, capital_input, risk_percent, stop_strategy,
+        swing_low=swing_low, support_level=support_level
+    )
 
     if position_size:
-        st.success(f"**Empfohlene Positionsgröße:** {position_size:.1f} Aktien/Contracts")
-        st.write(f"Risiko pro Trade: **{risk_amount:.2f} €** ({risk_percent*100:.1f}% von {capital_input:.0f} €)")
-        st.write(f"Minimum Risk:Reward-Ratio: **{rr}:1**")
-        st.markdown("""
-        **Was bedeutet R:R (Risk:Reward)?**  
-        - R:R = Risiko : Gewinn-Verhältnis  
-        - Beispiel: 1:3 → Du riskierst 1 €, um 3 € zu gewinnen  
-        - Mindestens **1:2** empfohlen → langfristig profitabel, auch bei nur 40–50% Trefferquote  
-        - Bei 1:1 oder schlechter verlierst du auf Dauer Geld, selbst bei guten Treffern  
-        """)
+        st.success(f"**Positionsgröße:** {position_size:.1f} Aktien/Contracts")
+        st.write(f"**Stop-Loss-Preis:** {stop_price:.2f} €")
+        st.write(f"**Risiko pro Trade:** {risk_amount:.2f} € ({risk_percent*100:.1f}% von {capital_input:.0f} €)")
+        st.write(f"**Ziel bei 2R:** {target_2r:.2f} € (R:R = 2:1)")
+        st.info(stop_info)
     else:
-        st.warning("Positionsgröße nicht berechenbar (ATR = 0 oder fehlend)")
+        st.warning(stop_info)
+
+    # Kleine Tabelle mit Szenarien (Vergleich aller Strategien)
+    st.markdown("**Vergleich mehrerer Stop-Loss-Szenarien** (bei deinem Kapital)")
+    scenarios = []
+    strategies = ["atr_1.5x", "atr_2x", "atr_3x", "swing_low", "support_level", "trailing_atr"]
+    for strat in strategies:
+        _, _, stop_p, _, info = get_risk_management(snap, snap.price, capital_input, risk_percent, strat, swing_low=swing_low, support_level=support_level)
+        scenarios.append({
+            "Strategie": info.split(' – ')[0],
+            "Stop-Preis": f"{stop_p:.2f} €" if stop_p else "N/A",
+            "Risiko %": f"{((snap.price - stop_p) / snap.price * 100):.1f}%" if stop_p else "N/A",
+            "Positionsgröße": f"{(risk_amount / (snap.price - stop_p)):.1f}" if stop_p else "N/A"
+        })
+    scenarios_df = pd.DataFrame(scenarios)
+    st.table(scenarios_df)
+
+    # R:R-Erklärung
+    st.markdown("""
+    **Was bedeutet R:R (Risk:Reward)?**  
+    - R:R = Risiko:Gewinn-Verhältnis  
+    - Beispiel: 1:2 → Riskierst 1 €, um 2 € zu gewinnen  
+    - Mindestens 1:2 empfohlen → profitabel bei 40–50% Trefferquote  
+    - Bei 1:1 oder schlechter verlierst du langfristig Geld
+    """)
 
     # 5. Erweiterte Options-Empfehlung
     st.markdown("**5. Erweiterte Options-Empfehlung**")
